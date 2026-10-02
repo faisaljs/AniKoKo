@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0d10" />
+  <meta name="anikoko-api" content="http://localhost:8000" />
+  <title>AniKoKo — Hindi Dub Anime</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>" />
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="#" data-nav="home">Ani<span>KoKo</span></a>
+  <form class="searchbar" id="searchForm" autocomplete="off">
+    <input id="searchInput" type="search" placeholder="Search anime…" aria-label="Search" />
+    <button type="submit" aria-label="Search">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+    </button>
+  </form>
+</header>
+
+<main class="container">
+
+  <section id="view-home" class="view">
+    <div class="hero">
+      <h1>Hindi Dub Anime, <span>streamed clean.</span></h1>
+      <p>Aggregated from DesiDubAnime. One clean interface.</p>
+    </div>
+
+    <div id="continueSection" hidden>
+      <div class="row-head">
+        <h2>Continue Watching</h2>
+        <button class="link-btn" id="clearHistory">Clear</button>
+      </div>
+      <div id="continueGrid" class="grid"></div>
+    </div>
+
+    <div class="row-head"><h2>Latest</h2></div>
+    <div id="latestGrid" class="grid"></div>
+    <div class="load-more">
+      <button id="loadMoreBtn">Load more</button>
+    </div>
+  </section>
+
+  <section id="view-search" class="view" hidden>
+    <div class="row-head"><h2 id="searchTitle">Search</h2></div>
+    <div id="searchGrid" class="grid"></div>
+    <div id="searchEmpty" class="empty" hidden>No results.</div>
+  </section>
+
+  <section id="view-anime" class="view" hidden>
+    <button class="back-btn" id="animeBack">← Back</button>
+    <div class="detail">
+      <div class="detail-poster"><img id="dPoster" alt="" /></div>
+      <div class="detail-body">
+        <h1 id="dTitle">Loading…</h1>
+        <div class="tags">
+          <span class="tag" id="dProvider">—</span>
+          <span class="tag">Hindi Dub</span>
+        </div>
+        <p class="syn" id="dSyn"></p>
+      </div>
+    </div>
+    <div class="row-head">
+      <h2>Episodes</h2>
+      <span class="muted" id="epCount"></span>
+    </div>
+    <div id="epList" class="ep-list"></div>
+  </section>
+
+</main>
+
+<footer class="foot"><span>AniKoKo — DesiDubAnime front-end</span></footer>
+
+<div id="watchModal" class="modal" hidden>
+  <div class="modal-bg" id="modalBg"></div>
+  <div class="modal-body">
+    <div class="watch-head">
+      <div>
+        <h3 id="wTitle">Now playing</h3>
+        <div class="tags"><span class="tag" id="wProvider">—</span></div>
+      </div>
+      <button class="icon-btn" id="watchClose" aria-label="Close">✕</button>
+    </div>
+    <div class="player-wrap" id="playerWrap">
+      <div id="playerHost" class="player-host"></div>
+      <div id="playerFallback" class="player-fallback" hidden></div>
+    </div>
+    <div class="source-panel">
+      <div class="row-head">
+        <h4>Servers</h4>
+        <div id="downloadRow" class="download-row"></div>
+      </div>
+      <div id="sourceList" class="source-list"></div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
