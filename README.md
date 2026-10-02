@@ -1,6 +1,8 @@
 # AniKoKo
 
-Hindi-dub anime aggregator. FastAPI backend that scrapes DesiDubAnime via WP REST + HTML, plus a vanilla-JS frontend.
+> Hindi-dub anime, streamed clean. FastAPI scraping backend + zero-build vanilla JS frontend.
+
+Self-hosted aggregator that scrapes DesiDubAnime for metadata and stream sources, normalizes them into one JSON API, and serves them through a lightweight client with HLS playback, embed fallbacks, and downloads.
 
 ## Layout
 
