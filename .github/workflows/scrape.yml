@@ -1,0 +1,45 @@
+name: Aniflix Automated Scraper
+
+on:
+  schedule:
+    # Runs every 6 hours automatically. Staggered to :15 to avoid peak GitHub Actions traffic
+    - cron: '15 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: aniflix-scrape-job
+  cancel-in-progress: false
+
+# Restrict permissions for maximum safety
+permissions:
+  contents: read
+
+jobs:
+  collect-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45 # Increased slightly to allow for safe rate-limit pausing
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip' # Smartly caches dependencies to save RAM/CPU on boot
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # --no-cache-dir keeps the runner's memory footprint clean
+          pip install --no-cache-dir httpx beautifulsoup4 tenacity
+
+      - name: Run Scraper and Update Gist
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ vars.GIST_ID }}
+          # Tells python not to buffer output, so you see logs instantly
+          PYTHONUNBUFFERED: "1" 
+        run: |
+          python scripts/collect.py
