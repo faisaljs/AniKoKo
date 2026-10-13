@@ -38,10 +38,8 @@ jobs:
       - name: Run Scraper and Update Gist
         env:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-          GIST_ID: ${{ vars.GIST_ID }}
-          # Tells python not to buffer output, so you see logs instantly
+          GIST_ID: ${{ secrets.GIST_ID }} # <--- Changed from 'vars' to 'secrets'
           PYTHONUNBUFFERED: "1" 
-          # CRITICAL FIX: Tells Python to look in the root folder for the 'utils' module
           PYTHONPATH: "."
         run: |
           python scripts/collect.py
