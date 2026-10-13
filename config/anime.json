@@ -3,26 +3,163 @@
     {
       "anilist_id": 20,
       "title": "Naruto",
+      "language": "Hindi Dub",
       "enabled": true
     },
     {
-      "anilist_id": 21,
-      "title": "One Piece",
-      "enabled": true
-    },
-    {
-      "anilist_id": 16498,
-      "title": "Attack on Titan",
+      "anilist_id": 1735,
+      "title": "Naruto: Shippuden",
+      "language": "Hindi Dub",
       "enabled": true
     },
     {
       "anilist_id": 113415,
       "title": "Jujutsu Kaisen",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 145064,
+      "title": "Jujutsu Kaisen Season 2",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 101922,
+      "title": "Demon Slayer: Kimetsu no Yaiba",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 129874,
+      "title": "Demon Slayer: Kimetsu no Yaiba Mugen Train Arc",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 151807,
+      "title": "Solo Leveling",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 127230,
+      "title": "Chainsaw Man",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 1535,
+      "title": "Death Note",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 813,
+      "title": "Dragon Ball Z",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 21175,
+      "title": "Dragon Ball Super",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 21459,
+      "title": "My Hero Academia",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 140960,
+      "title": "Spy x Family",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 120120,
+      "title": "Tokyo Revengers",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 97940,
+      "title": "Black Clover",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 137822,
+      "title": "Blue Lock",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 153288,
+      "title": "Kaiju No. 8",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 163270,
+      "title": "Wind Breaker",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 151801,
+      "title": "Mashle: Magic and Muscles",
+      "language": "Hindi Dub",
       "enabled": true
     },
     {
       "anilist_id": 21087,
-      "title": "One Punch Man",
+      "title": "One-Punch Man",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 16498,
+      "title": "Attack on Titan",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 21,
+      "title": "One Piece",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 269,
+      "title": "Bleach",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 11061,
+      "title": "Hunter x Hunter (2011)",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 105333,
+      "title": "Dr. Stone",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 20464,
+      "title": "Haikyu!!",
+      "language": "Hindi Dub",
+      "enabled": true
+    },
+    {
+      "anilist_id": 101348,
+      "title": "Vinland Saga",
+      "language": "Hindi Dub",
       "enabled": true
     }
   ]
