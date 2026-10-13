@@ -2,12 +2,14 @@ import os
 import sys
 import json
 import time
+import re
 import inspect
 import asyncio
 import importlib.util
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Tuple
 import httpx
+from bs4 import BeautifulSoup
 
 # ---------------------------------------------------------------------------
 # Path Configuration & Root/Backend Bridging
@@ -39,7 +41,7 @@ from resolvers.p2pplay import P2PPlayResolver
 
 
 # ---------------------------------------------------------------------------
-# Utility Helpers
+# Stage 1: Dynamic Object & Dataclass Unpackers
 # ---------------------------------------------------------------------------
 async def maybe_await(result_or_coro):
     """Safely awaits if target is a coroutine; returns immediate value otherwise."""
@@ -49,11 +51,53 @@ async def maybe_await(result_or_coro):
 
 
 def create_instance(cls, *args, **kwargs):
-    """Safely instantiates classes with variable constructor signatures."""
+    """Safely instantiates classes regardless of zero-arg or configured constructor."""
     try:
         return cls(*args, **kwargs)
     except TypeError:
         return cls()
+
+
+def extract_url(target: Any) -> Optional[str]:
+    """Unpacks string URL from AnimeCard, Episode, Source, Dict, or String."""
+    if not target:
+        return None
+    if isinstance(target, str):
+        return target
+    if hasattr(target, "url") and target.url:
+        return str(target.url)
+    if hasattr(target, "link") and target.link:
+        return str(target.link)
+    if isinstance(target, dict):
+        return target.get("url") or target.get("link") or target.get("src")
+    return None
+
+
+def extract_episode_meta(ep: Any, index: int) -> Tuple[int, str, Optional[str]]:
+    """Extracts (episode_number, title, url) from Episode dataclass, dict, or tuple."""
+    num = index + 1
+    title = f"Episode {num}"
+    url = extract_url(ep)
+
+    if hasattr(ep, "number") and ep.number is not None:
+        try:
+            num = int(ep.number)
+        except Exception:
+            pass
+    elif hasattr(ep, "episode_number") and ep.episode_number is not None:
+        try:
+            num = int(ep.episode_number)
+        except Exception:
+            pass
+
+    if hasattr(ep, "title") and ep.title:
+        title = str(ep.title)
+
+    if isinstance(ep, dict):
+        num = ep.get("number") or ep.get("episode_number") or num
+        title = ep.get("title") or title
+
+    return num, title, url
 
 
 def safe_filename(title: str, anilist_id: int) -> str:
@@ -66,26 +110,8 @@ def validate_schema(data: Dict[str, Any]) -> bool:
     return all(k in data for k in required_keys) and isinstance(data["episodes"], list)
 
 
-async def verify_stream_url(url: str, headers: Optional[Dict[str, str]] = None) -> bool:
-    """Non-blocking lightweight stream reachability check (checks first 1KB or HEAD)."""
-    if not url or not str(url).startswith("http"):
-        return False
-    try:
-        req_headers = {"Range": "bytes=0-1024", "User-Agent": "Mozilla/5.0"}
-        if headers:
-            req_headers.update(headers)
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-            res = await client.get(url, headers=req_headers)
-            if res.status_code in (200, 206):
-                return True
-            head_res = await client.head(url, headers=headers)
-            return head_res.status_code in (200, 301, 302)
-    except Exception:
-        return False
-
-
 # ---------------------------------------------------------------------------
-# AniList GraphQL Client
+# Stage 2: AniList GraphQL Client
 # ---------------------------------------------------------------------------
 class AniListClient:
     API_URL = "https://graphql.anilist.co"
@@ -125,7 +151,7 @@ class AniListClient:
                         "total_episodes": media.get("episodes")
                     }
         except Exception as e:
-            print(f"[WARN] AniList lookup failed for ID {anilist_id}: {e}")
+            print(f"[STAGE 2 WARN] AniList lookup failed for ID {anilist_id}: {e}")
         return None
 
     async def close(self):
@@ -133,71 +159,134 @@ class AniListClient:
 
 
 # ---------------------------------------------------------------------------
-# Scraper & Resolver Invocation Adaptors
+# Stage 3 to 7: Execution & Fallback Engine
 # ---------------------------------------------------------------------------
-async def run_search_on_scraper(scraper, title: str) -> Optional[Any]:
-    for method_name in ["search", "search_anime"]:
-        if hasattr(scraper, method_name):
-            try:
-                method = getattr(scraper, method_name)
-                result = await maybe_await(method(title))
-                if result:
-                    if isinstance(result, list) and len(result) > 0:
-                        first = result[0]
-                        if isinstance(first, dict):
-                            return first.get("id") or first.get("url") or first.get("link") or first
-                        return first
-                    return result
-            except Exception as e:
-                print(f"[DEBUG] {scraper.__class__.__name__}.{method_name} failed: {e}")
+async def fetch_html(url: str, timeout: float = 15.0) -> Optional[str]:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.google.com/"
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code == 200:
+                return res.text
+    except Exception as e:
+        print(f"[HTML FETCH ERROR] {url}: {e}")
     return None
 
 
-async def run_get_episodes(scraper, anime_identifier: Any) -> List[Any]:
-    for method_name in ["get_episodes", "episodes"]:
-        if hasattr(scraper, method_name):
+async def verify_stream_url(url: str, headers: Optional[Dict[str, str]] = None) -> bool:
+    """Stage 7: Byte-range check for stream reachability."""
+    if not url or not str(url).startswith("http"):
+        return False
+    try:
+        req_headers = {"Range": "bytes=0-1024", "User-Agent": "Mozilla/5.0"}
+        if headers:
+            req_headers.update(headers)
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            res = await client.get(url, headers=req_headers)
+            if res.status_code in (200, 206):
+                return True
+            head_res = await client.head(url, headers=headers)
+            return head_res.status_code in (200, 301, 302)
+    except Exception:
+        return False
+
+
+def extract_embeds_from_html(html_text: str) -> List[str]:
+    """Stage 5: Scrapes embed iframes and video player targets from raw HTML."""
+    embeds = set()
+    soup = BeautifulSoup(html_text, "lxml")
+
+    # Iframes
+    for iframe in soup.find_all("iframe"):
+        src = iframe.get("src") or iframe.get("data-src")
+        if src and str(src).startswith("http"):
+            embeds.add(src)
+
+    # DooPlay Player Elements
+    for tag in soup.select("ul.idTabs li a, div.source-box a, .play-online a"):
+        href = tag.get("href")
+        if href and str(href).startswith("http"):
+            embeds.add(href)
+
+    # Regex search for embed providers
+    patterns = [
+        r'https?://[^\s\'"]*vidmoly\.[^\s\'"]+',
+        r'https?://[^\s\'"]*filesforever\.[^\s\'"]+',
+        r'https?://[^\s\'"]*abyssplayer\.[^\s\'"]+',
+        r'https?://[^\s\'"]*p2pplay\.[^\s\'"]+'
+    ]
+    for pat in patterns:
+        for match in re.findall(pat, html_text):
+            cleaned = match.split('"')[0].split("'")[0]
+            embeds.add(cleaned)
+
+    return list(embeds)
+
+
+async def resolve_embed_to_streams(embed_url: str, resolvers: list) -> List[Dict[str, Any]]:
+    """Stage 6: Feeds player links to resolvers with regex fallback."""
+    streams = []
+
+    # 1. Native Resolvers
+    for res_obj in resolvers:
+        can_handle = False
+        for chk_method in ["can_resolve", "is_supported"]:
+            if hasattr(res_obj, chk_method):
+                try:
+                    can_handle = await maybe_await(getattr(res_obj, chk_method)(embed_url))
+                    if can_handle:
+                        break
+                except Exception:
+                    pass
+
+        if can_handle and hasattr(res_obj, "resolve"):
             try:
-                method = getattr(scraper, method_name)
-                res = await maybe_await(method(anime_identifier))
-                if isinstance(res, list):
-                    return res
+                resolved = await maybe_await(res_obj.resolve(embed_url))
+                if isinstance(resolved, dict):
+                    # Multi-stream array
+                    for st in resolved.get("stream_urls", []):
+                        if st.get("url") and str(st["url"]).startswith("http"):
+                            streams.append(st)
+                    # Single stream field
+                    if not streams and resolved.get("url") and str(resolved["url"]).startswith("http"):
+                        streams.append({
+                            "url": resolved["url"],
+                            "type": "hls" if ".m3u8" in resolved["url"] else "direct",
+                            "quality": resolved.get("quality", "auto"),
+                            "collected_at": datetime.now(timezone.utc).isoformat(),
+                            "status": "reachable"
+                        })
             except Exception as e:
-                print(f"[DEBUG] {scraper.__class__.__name__}.{method_name} failed: {e}")
-    return []
+                print(f"[RESOLVER ERROR] {res_obj.__class__.__name__} failed on {embed_url}: {e}")
 
+    # 2. Fallback: Direct Vidmoly JWPlayer M3U8 extraction
+    if not streams and "vidmoly" in embed_url.lower():
+        html = await fetch_html(embed_url, timeout=10.0)
+        if html:
+            m3u8_match = re.search(r'file\s*:\s*["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', html)
+            if m3u8_match:
+                direct_m3u8 = m3u8_match.group(1)
+                streams.append({
+                    "url": direct_m3u8,
+                    "type": "hls",
+                    "quality": "auto",
+                    "collected_at": datetime.now(timezone.utc).isoformat(),
+                    "status": "reachable"
+                })
 
-async def run_get_sources(scraper, ep_identifier: Any) -> List[str]:
-    for method_name in ["get_sources", "get_episode_sources", "extract_embeds", "get_streams"]:
-        if hasattr(scraper, method_name):
-            try:
-                method = getattr(scraper, method_name)
-                res = await maybe_await(method(ep_identifier))
-                if isinstance(res, list):
-                    urls = []
-                    for item in res:
-                        if isinstance(item, str):
-                            urls.append(item)
-                        elif isinstance(item, dict):
-                            url = item.get("url") or item.get("src") or item.get("link")
-                            if url:
-                                urls.append(url)
-                    return urls
-            except Exception:
-                pass
-    return []
+    return streams
 
 
 # ---------------------------------------------------------------------------
-# Core Anime Collector Task
+# Core Anime Collector Function
 # ---------------------------------------------------------------------------
 async def process_single_anime(
     anime_config: dict, existing_data_str: str, settings: dict
 ) -> Tuple[Optional[str], Optional[str], int]:
-    """
-    Processes an anime through AniList, scrapers, and video host resolvers.
-    Returns: (filename, json_string, total_valid_links)
-    Strict guard: Returns (None, None, 0) if no valid streams or downloads exist.
-    """
     anilist = AniListClient(timeout=15)
     resolvers = [
         create_instance(VidmolyResolver),
@@ -208,131 +297,163 @@ async def process_single_anime(
     scraper = create_instance(DesiDubAnimeScraper)
 
     anilist_id = anime_config["anilist_id"]
-    print(f"[*] Resolving AniList metadata for ID: {anilist_id}...")
+    print(f"\n=======================================================")
+    print(f"[STEP 2: METADATA] Querying AniList for ID {anilist_id}...")
     meta = await anilist.get_anime_by_id(anilist_id)
     await anilist.close()
 
     if not meta:
-        print(f"[WARN] AniList metadata unavailable for ID: {anilist_id}")
+        print(f"[STEP 2 FAILED] AniList lookup failed for ID {anilist_id}.")
         return None, None, 0
 
     canonical_title = meta["title"]["english"] or meta["title"]["romaji"]
     file_name = safe_filename(canonical_title, anilist_id)
+    print(f"[STEP 2 COMPLETE] Canonical Title: '{canonical_title}'")
 
-    # Retain previously verified episodes from existing storage
-    existing_eps: Dict[int, Dict[str, Any]] = {}
-    if existing_data_str:
-        try:
-            raw_json = json.loads(existing_data_str)
-            for ep in raw_json.get("episodes", []):
-                if any(s.get("stream_urls") or s.get("download_urls") for s in ep.get("sources", [])):
-                    existing_eps[ep["episode_number"]] = ep
-        except Exception:
-            pass
+    # Step 3: Search
+    print(f"[STEP 3: MATCHING] Searching '{canonical_title}' on {scraper.__class__.__name__}...")
+    match_card = None
+    for method_name in ["search", "search_anime"]:
+        if hasattr(scraper, method_name):
+            try:
+                res = await maybe_await(getattr(scraper, method_name)(canonical_title))
+                if res and isinstance(res, list) and len(res) > 0:
+                    match_card = res[0]
+                    break
+            except Exception as e:
+                print(f"[STEP 3 DEBUG] {method_name} failed: {e}")
 
-    collected_episodes: List[Dict[str, Any]] = []
+    # Fallback search with Romaji title
+    if not match_card and meta["title"]["romaji"]:
+        for method_name in ["search", "search_anime"]:
+            if hasattr(scraper, method_name):
+                try:
+                    res = await maybe_await(getattr(scraper, method_name)(meta["title"]["romaji"]))
+                    if res and isinstance(res, list) and len(res) > 0:
+                        match_card = res[0]
+                        break
+                except Exception:
+                    pass
 
-    print(f"[*] Searching '{canonical_title}' on {scraper.__class__.__name__}...")
-    match = await run_search_on_scraper(scraper, canonical_title)
-    if not match and meta["title"]["romaji"]:
-        match = await run_search_on_scraper(scraper, meta["title"]["romaji"])
+    anime_page_url = extract_url(match_card)
+    if not anime_page_url:
+        print(f"[STEP 3 FAILED] No matching anime URL found for '{canonical_title}'.")
+        return None, None, 0
 
-    if not match:
-        print(f"[SOURCE] No match found on {scraper.__class__.__name__} for '{canonical_title}'.")
-    else:
-        print(f"[SOURCE] Match located: {match}")
-        episodes = await run_get_episodes(scraper, match)
-        max_ep = settings.get("scraping", {}).get("max_episodes_per_anime", 12)
+    print(f"[STEP 3 COMPLETE] Matched URL: {anime_page_url}")
 
-        for idx, ep in enumerate(episodes[:max_ep]):
-            ep_num = idx + 1
-            ep_target = ep
+    # Step 4: Episode Discovery
+    print(f"[STEP 4: EPISODES] Discovering episodes for {anime_page_url}...")
+    raw_episodes = []
 
-            if isinstance(ep, dict):
-                ep_num = ep.get("number") or ep.get("episode_number") or (idx + 1)
-                ep_target = ep.get("id") or ep.get("url") or ep.get("episode_url") or ep
+    # 4A. Native method call (unpacks string URL)
+    for ep_method in ["get_episodes", "episodes"]:
+        if hasattr(scraper, ep_method):
+            try:
+                res = await maybe_await(getattr(scraper, ep_method)(anime_page_url))
+                if res and isinstance(res, list):
+                    raw_episodes = res
+                    print(f"[STEP 4 NATIVE] Extracted {len(raw_episodes)} episodes using {ep_method}()")
+                    break
+            except Exception as e:
+                print(f"[STEP 4 DEBUG] {ep_method} failed: {e}")
 
-            embed_urls = await run_get_sources(scraper, ep_target)
-            stream_list: List[Dict[str, Any]] = []
-            download_list: List[Dict[str, Any]] = []
-            seen_urls = set()
+    # 4B. Fallback: Parse DooPlay HTML structure
+    if not raw_episodes:
+        print(f"[STEP 4 FALLBACK] Attempting HTML structure parse...")
+        anime_html = await fetch_html(anime_page_url)
+        if anime_html:
+            soup = BeautifulSoup(anime_html, "lxml")
+            # Select episodes from DooPlay lists
+            for a_tag in soup.select("ul.episodios li .episodiotitle a, ul.episodios li a"):
+                ep_href = a_tag.get("href")
+                if ep_href and "/episode/" in ep_href:
+                    raw_episodes.append({
+                        "title": a_tag.get_text(strip=True) or "Episode",
+                        "url": ep_href
+                    })
+            print(f"[STEP 4 FALLBACK] Found {len(raw_episodes)} episodes via HTML selectors.")
 
-            for embed in embed_urls:
-                for res_obj in resolvers:
-                    can_handle = False
-                    if hasattr(res_obj, "can_resolve"):
-                        can_handle = await maybe_await(res_obj.can_resolve(embed))
-                    elif hasattr(res_obj, "is_supported"):
-                        can_handle = await maybe_await(res_obj.is_supported(embed))
+    if not raw_episodes:
+        print(f"[STEP 4 FAILED] 0 episodes found for '{canonical_title}'.")
+        return None, None, 0
 
-                    if can_handle and hasattr(res_obj, "resolve"):
-                        try:
-                            resolved = await maybe_await(res_obj.resolve(embed))
-                            if isinstance(resolved, dict):
-                                # 1. Extract stream_urls list
-                                for s in resolved.get("stream_urls", []):
-                                    s_url = s.get("url")
-                                    if s_url and s_url not in seen_urls and str(s_url).startswith("http"):
-                                        seen_urls.add(s_url)
-                                        stream_list.append(s)
+    max_episodes = settings.get("scraping", {}).get("max_episodes_per_anime", 12)
+    collected_episodes = []
 
-                                # 2. Extract single url fallback
-                                if "url" in resolved and resolved["url"] and str(resolved["url"]).startswith("http"):
-                                    single_url = resolved["url"]
-                                    if single_url not in seen_urls:
-                                        seen_urls.add(single_url)
-                                        is_valid = True
-                                        if settings.get("verification", {}).get("verify_links", True):
-                                            is_valid = await verify_stream_url(single_url)
+    # Step 5 & 6: Embed Extraction & Stream Resolution
+    for idx, ep_obj in enumerate(raw_episodes[:max_episodes]):
+        ep_num, ep_title, ep_url = extract_episode_meta(ep_obj, idx)
+        if not ep_url:
+            continue
 
-                                        if is_valid:
-                                            stream_list.append({
-                                                "url": single_url,
-                                                "type": "hls" if ".m3u8" in single_url else "direct",
-                                                "quality": resolved.get("quality", "auto"),
-                                                "collected_at": datetime.now(timezone.utc).isoformat(),
-                                                "status": "reachable"
-                                            })
+        print(f"\n  -> Processing Ep {ep_num}: {ep_title} ({ep_url})")
 
-                                # 3. Extract download_urls list
-                                for dl in resolved.get("download_urls", []):
-                                    dl_url = dl.get("url")
-                                    if dl_url and dl_url not in seen_urls and str(dl_url).startswith("http"):
-                                        seen_urls.add(dl_url)
-                                        download_list.append(dl)
-                        except Exception as ex:
-                            print(f"[DEBUG] Resolver {res_obj.__class__.__name__} failed on {embed}: {ex}")
+        # 5A. Embed discovery
+        embed_urls = []
+        for src_method in ["get_sources", "get_episode_sources", "extract_embeds"]:
+            if hasattr(scraper, src_method):
+                try:
+                    res = await maybe_await(getattr(scraper, src_method)(ep_url))
+                    if res and isinstance(res, list):
+                        for item in res:
+                            u = extract_url(item)
+                            if u:
+                                embed_urls.append(u)
+                        if embed_urls:
+                            break
+                except Exception:
+                    pass
 
-            if stream_list or download_list:
-                collected_episodes.append({
-                    "episode_number": ep_num,
-                    "episode_title": f"Episode {ep_num}",
-                    "sources": [{
-                        "source_id": "desidubanime",
-                        "source_name": "DesiDubAnime",
-                        "stream_urls": stream_list,
-                        "download_urls": download_list,
-                        "subtitles": []
-                    }]
-                })
+        # 5B. HTML embed fallback
+        if not embed_urls:
+            ep_html = await fetch_html(ep_url)
+            if ep_html:
+                embed_urls = extract_embeds_from_html(ep_html)
 
-            await asyncio.sleep(settings.get("scraping", {}).get("request_delay_seconds", 0.5))
+        print(f"     [STEP 5: EMBEDS] Found {len(embed_urls)} embed players.")
 
-    # Merge freshly resolved episodes into existing history
-    for ep in collected_episodes:
-        existing_eps[ep["episode_number"]] = ep
+        # 6. Stream Resolution
+        ep_stream_list = []
+        seen_streams = set()
 
-    final_episodes = sorted(list(existing_eps.values()), key=lambda x: x["episode_number"])
+        for embed in embed_urls:
+            resolved_streams = await resolve_embed_to_streams(embed, resolvers)
+            for st in resolved_streams:
+                st_url = st.get("url")
+                if st_url and st_url not in seen_streams:
+                    # Step 7: Reachability check
+                    is_reachable = True
+                    if settings.get("verification", {}).get("verify_links", True):
+                        is_reachable = await verify_stream_url(st_url)
 
-    total_valid_links = sum(
-        len(s.get("stream_urls", [])) + len(s.get("download_urls", []))
-        for ep in final_episodes
-        for s in ep.get("sources", [])
-    )
+                    if is_reachable:
+                        seen_streams.add(st_url)
+                        st["collected_at"] = datetime.now(timezone.utc).isoformat()
+                        st["last_checked_at"] = datetime.now(timezone.utc).isoformat()
+                        st["status"] = "reachable"
+                        ep_stream_list.append(st)
+                        print(f"     [STEP 6 & 7 SUCCESS] Resolved verified {st.get('type')}: {st_url}")
 
-    # STRICT GUARD: Never upload an anime file if it has 0 usable streaming or download links
-    if not final_episodes or total_valid_links == 0:
-        print(f"[SKIP] No direct or M3U8 links found for '{canonical_title}'. Skipping Gist upload.")
+        if ep_stream_list:
+            collected_episodes.append({
+                "episode_number": ep_num,
+                "episode_title": ep_title,
+                "sources": [{
+                    "source_id": "desidubanime",
+                    "source_name": "DesiDubAnime",
+                    "stream_urls": ep_stream_list,
+                    "download_urls": [],
+                    "subtitles": []
+                }]
+            })
+
+        await asyncio.sleep(settings.get("scraping", {}).get("request_delay_seconds", 0.5))
+
+    total_valid = sum(len(s.get("stream_urls", [])) for ep in collected_episodes for s in ep.get("sources", []))
+
+    if total_valid == 0:
+        print(f"\n[STEP 8: REJECTED] '{canonical_title}' produced 0 reachable stream links. Skipping Gist upload.")
         return None, None, 0
 
     payload = {
@@ -340,27 +461,26 @@ async def process_single_anime(
         "anilist_id": anilist_id,
         "title": meta["title"],
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "episodes": final_episodes
+        "episodes": collected_episodes
     }
 
     if validate_schema(payload):
-        print(f"[SUCCESS] Prepared {len(final_episodes)} episodes with {total_valid_links} working links for '{canonical_title}'.")
-        return file_name, json.dumps(payload, indent=2, ensure_ascii=False), total_valid_links
+        print(f"\n[STEP 8: ACCEPTED] Staging '{canonical_title}' ({total_valid} functional streams).")
+        return file_name, json.dumps(payload, indent=2, ensure_ascii=False), total_valid
 
     return None, None, 0
 
 
 # ---------------------------------------------------------------------------
-# Main Async Orchestrator
+# Main Orchestrator
 # ---------------------------------------------------------------------------
 async def async_main():
     start_time = time.time()
-
     gist_token = os.environ.get("GIST_TOKEN")
     gist_id = os.environ.get("GIST_ID")
 
     if not gist_token or not gist_id:
-        print("[CRITICAL] Missing GIST_TOKEN or GIST_ID. Exiting.")
+        print("[CRITICAL] Missing GIST_TOKEN or GIST_ID. Terminating.")
         sys.exit(1)
 
     config_dir = os.path.join(BASE_DIR, "config")
@@ -378,13 +498,13 @@ async def async_main():
             anime_data = json.load(f)
             anime_queue = [a for a in anime_data.get("anime", []) if a.get("enabled", True)]
 
-    print(f"[INFO] Loaded {len(anime_queue)} active anime from config/anime.json")
+    print(f"[STARTUP] Loaded {len(anime_queue)} active anime from config/anime.json")
 
     gist = GistStorage(gist_token, gist_id)
     try:
         existing_files = gist.fetch_all_files()
     except Exception as e:
-        print(f"[CRITICAL] Failed to fetch current Gist contents: {e}")
+        print(f"[CRITICAL] Could not read Gist contents: {e}")
         sys.exit(1)
 
     files_to_update: Dict[str, str] = {}
@@ -396,7 +516,6 @@ async def async_main():
             filename, json_data, valid_links = await process_single_anime(
                 anime, existing_files.get(fname, ""), settings
             )
-            # Only stage files that contain working streaming or direct links
             if filename and json_data and valid_links > 0:
                 files_to_update[filename] = json_data
                 catalog_index.append({
@@ -406,13 +525,13 @@ async def async_main():
                     "total_valid_links": valid_links
                 })
         except Exception as exc:
-            print(f"[ERROR] Task failed for {anime.get('title', 'Unknown ID: ' + str(anime.get('anilist_id')))}: {exc}")
+            print(f"[ERROR] Task failed for {anime.get('title')}: {exc}")
 
     if not files_to_update:
-        print("[INFO] No direct or M3U8 links found across any anime. Gist remains untouched.")
+        print("\n[INFO] No functional links collected across all anime. Gist remains untouched.")
         return
 
-    # Generate updated index.json reflecting verified entries
+    # Update index.json
     files_to_update["index.json"] = json.dumps({
         "last_run": datetime.now(timezone.utc).isoformat(),
         "total_active_anime": len(files_to_update),
@@ -426,7 +545,7 @@ async def async_main():
         print(f"[CRITICAL] Publishing to Gist failed: {e}")
         sys.exit(1)
 
-    print(f"[INFO] Pipeline finished cleanly: Published {len(files_to_update)} files in {round(time.time() - start_time, 2)}s.")
+    print(f"\n[DONE] Successfully uploaded {len(files_to_update)} files to Gist in {round(time.time() - start_time, 2)}s.")
 
 
 if __name__ == "__main__":
