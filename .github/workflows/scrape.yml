@@ -10,14 +10,14 @@ concurrency:
   group: aniflix-scrape-job
   cancel-in-progress: false
 
-# Restrict permissions for maximum safety
+# Restrict default permissions for maximum safety
 permissions:
   contents: read
 
 jobs:
   collect-and-publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 45 # Increased slightly to allow for safe rate-limit pausing
+    timeout-minutes: 45
 
     steps:
       - name: Checkout Code
@@ -27,19 +27,19 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip' # Smartly caches dependencies to save RAM/CPU on boot
+          cache: 'pip'
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # --no-cache-dir keeps the runner's memory footprint clean
-          pip install --no-cache-dir httpx beautifulsoup4 tenacity
+          # Includes lxml to support HTML parsing in BeautifulSoup
+          pip install --no-cache-dir httpx beautifulsoup4 tenacity lxml
 
       - name: Run Scraper and Update Gist
         env:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-          GIST_ID: ${{ secrets.GIST_ID }} # <--- Changed from 'vars' to 'secrets'
-          PYTHONUNBUFFERED: "1" 
+          GIST_ID: ${{ secrets.GIST_ID }}
+          PYTHONUNBUFFERED: "1"
           PYTHONPATH: "."
         run: |
           python scripts/collect.py
