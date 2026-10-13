@@ -1,0 +1,29 @@
+{
+  "anime": [
+    {
+      "anilist_id": 20,
+      "title": "Naruto",
+      "enabled": true
+    },
+    {
+      "anilist_id": 21,
+      "title": "One Piece",
+      "enabled": true
+    },
+    {
+      "anilist_id": 16498,
+      "title": "Attack on Titan",
+      "enabled": true
+    },
+    {
+      "anilist_id": 113415,
+      "title": "Jujutsu Kaisen",
+      "enabled": true
+    },
+    {
+      "anilist_id": 21087,
+      "title": "One Punch Man",
+      "enabled": true
+    }
+  ]
+}
