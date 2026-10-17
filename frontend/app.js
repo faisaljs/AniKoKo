@@ -17,8 +17,11 @@
   const HISTORY_MAX = 30;
   const RESUME_KEY = 'anikoko:resume:v1';
   const RESUME_MAX = 200;
+  const SETTINGS_KEY = 'anikoko:settings:v1';
   const SEARCH_DEBOUNCE_MS = 380;
   const SEARCH_MIN_CHARS = 2;
+
+  const DEFAULT_SETTINGS = { maxQuality: 0, autoplayNext: false };
 
   // ---------------- helpers ----------------
 
@@ -48,6 +51,10 @@
     lastAnime: null,
     lastQuery: null,
     searchSeq: 0,
+    searchController: null,
+    episodes: [],           // current anime's episodes
+    currentEpisodeIndex: -1,
+    settings: { ...DEFAULT_SETTINGS },
   };
 
   // ---------------- history ----------------
@@ -77,7 +84,7 @@
     renderContinue();
   }
 
-  // ---------------- resume playback ----------------
+  // ---------------- resume ----------------
 
   function readResumeMap() {
     try {
@@ -109,13 +116,31 @@
     return (m[url] && Number(m[url].t)) || 0;
   }
 
+  // ---------------- settings ----------------
+
+  function readSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      if (!raw) return { ...DEFAULT_SETTINGS };
+      const s = JSON.parse(raw);
+      return {
+        maxQuality: Number(s.maxQuality) || 0,
+        autoplayNext: !!s.autoplayNext,
+      };
+    } catch { return { ...DEFAULT_SETTINGS }; }
+  }
+
+  function writeSettings(s) {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch {}
+  }
+
   // ---------------- api ----------------
 
   const api = {
     latest: (page = 1) =>
       fetchJson(`${API_BASE}/api/latest?page=${page}`),
-    search: (q) =>
-      fetchJson(`${API_BASE}/api/search?q=${encodeURIComponent(q)}`),
+    search: (q, signal) =>
+      fetchJson(`${API_BASE}/api/search?q=${encodeURIComponent(q)}`, { signal }),
     anime: (url, provider) =>
       fetchJson(`${API_BASE}/api/anime?url=${encodeURIComponent(url)}&provider=${encodeURIComponent(provider)}`),
     sources: (url, provider) =>
@@ -127,10 +152,13 @@
     },
   };
 
-  async function fetchJson(url) {
+  async function fetchJson(url, opts = {}) {
     let r;
-    try { r = await fetch(url); }
-    catch (e) { throw new Error(`Network error: ${e.message}`); }
+    try { r = await fetch(url, opts); }
+    catch (e) {
+      if (e.name === 'AbortError') throw e;
+      throw new Error(`Network error: ${e.message}`);
+    }
     const text = await r.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch {}
@@ -207,7 +235,7 @@
       if (append) grid.insertAdjacentHTML('beforeend', html);
       else grid.innerHTML = html || '<p class="empty">No items.</p>';
       wireCards(grid);
-      if (items.length < 24) {
+      if (items.length === 0) {
         state.latestEnd = true;
         btn.textContent = 'No more';
         btn.disabled = true;
@@ -288,10 +316,17 @@
     $('#searchGrid').innerHTML = skeleton(8);
     $('#searchEmpty').hidden = true;
 
+    // Cancel any in-flight search
+    if (state.searchController) {
+      try { state.searchController.abort(); } catch {}
+    }
+    state.searchController = new AbortController();
+    const sig = state.searchController.signal;
+
     const seq = ++state.searchSeq;
     try {
-      const data = await api.search(q);
-      if (seq !== state.searchSeq) return;   // stale response — a newer search fired
+      const data = await api.search(q, sig);
+      if (seq !== state.searchSeq) return;
       const items = data.items || [];
       if (!items.length) {
         $('#searchGrid').innerHTML = '';
@@ -301,8 +336,11 @@
       $('#searchGrid').innerHTML = items.map(cardHTML).join('');
       wireCards($('#searchGrid'));
     } catch (e) {
+      if (e.name === 'AbortError') return;
       if (seq !== state.searchSeq) return;
       $('#searchGrid').innerHTML = `<p class="empty">Search failed: ${esc(e.message)}</p>`;
+    } finally {
+      if (seq === state.searchSeq) state.searchController = null;
     }
   }
 
@@ -314,6 +352,8 @@
 
   async function openAnime(url, provider) {
     state.lastAnime = { url, provider, poster: null };
+    state.episodes = [];
+    state.currentEpisodeIndex = -1;
     showView('anime');
 
     const dTitle  = $('#dTitle');
@@ -345,6 +385,7 @@
       const eps = (data.episodes || []).filter(ep =>
         ep && ep.url && /^https?:\/\//i.test(ep.url)
       );
+      state.episodes = eps;
       epCount.textContent = eps.length ? `${eps.length} episodes` : '';
       if (!eps.length) {
         epList.innerHTML = '<p class="empty">No episodes detected.</p>';
@@ -385,6 +426,10 @@
     currentAnimeUrl = animeUrlOverride || (state.lastAnime ? state.lastAnime.url : null);
     currentPoster = posterOverride || (state.lastAnime ? state.lastAnime.poster : null) || null;
 
+    // find index in the current anime's episode list (if any)
+    state.currentEpisodeIndex = state.episodes.findIndex(e => e.url === episodeUrl);
+    updateEpNav();
+
     $('#wTitle').textContent = currentTitle || 'Now playing';
     $('#wProvider').textContent = provider;
     $('#playerHost').innerHTML = '<div class="player-fallback">Loading sources…</div>';
@@ -398,7 +443,7 @@
       recordWatch({
         animeUrl: currentAnimeUrl,
         animeTitle,
-        poster: currentPoster,      // raw URL, not proxied
+        poster: currentPoster,      // raw URL
         provider,
         episodeUrl,
         episodeTitle: epTitle,
@@ -418,6 +463,43 @@
     }
   }
 
+  function updateEpNav() {
+    const nav = $('#epNav');
+    const total = state.episodes.length;
+    if (state.currentEpisodeIndex < 0 || total < 2) {
+      nav.hidden = true;
+      return;
+    }
+    nav.hidden = false;
+    const pos = state.currentEpisodeIndex + 1;
+    $('#epPosition').textContent = `${pos} / ${total}`;
+    $('#prevEpBtn').disabled = state.currentEpisodeIndex <= 0;
+    $('#nextEpBtn').disabled = state.currentEpisodeIndex >= total - 1;
+  }
+
+  function saveCurrentResume() {
+    const v = document.getElementById('__player');
+    if (v && currentEpisodeUrl) saveResume(currentEpisodeUrl, v.currentTime);
+  }
+
+  function goNext() {
+    if (state.currentEpisodeIndex < 0) return;
+    const next = state.episodes[state.currentEpisodeIndex + 1];
+    if (!next) return;
+    saveCurrentResume();
+    const label = next.title || (next.number ? `Episode ${next.number}` : 'Episode');
+    openWatch(next.url, currentProvider, currentAnimeTitle, label, currentAnimeUrl, currentPoster);
+  }
+
+  function goPrev() {
+    if (state.currentEpisodeIndex <= 0) return;
+    const prev = state.episodes[state.currentEpisodeIndex - 1];
+    if (!prev) return;
+    saveCurrentResume();
+    const label = prev.title || (prev.number ? `Episode ${prev.number}` : 'Episode');
+    openWatch(prev.url, currentProvider, currentAnimeTitle, label, currentAnimeUrl, currentPoster);
+  }
+
   function showFallback(msg) {
     teardownHls();
     $('#playerHost').innerHTML = '';
@@ -435,9 +517,7 @@
 
   function closeWatch() {
     teardownHls();
-    // best-effort save of resume position before we wipe the player
-    const v = document.getElementById('__player');
-    if (v && currentEpisodeUrl) saveResume(currentEpisodeUrl, v.currentTime);
+    saveCurrentResume();
     $('#playerHost').innerHTML = '';
     $('#watchModal').hidden = true;
     document.body.style.overflow = '';
@@ -464,13 +544,16 @@
     const s = String(q || '');
     const m = s.match(/(\d{3,4})/);
     if (m) return parseInt(m[1], 10);
-    if (s.toLowerCase() === 'auto') return 1080;   // auto = master playlist, treat as best
+    if (s.toLowerCase() === 'auto') return 1080;
     return 0;
   }
 
   function sourceRank(s) {
     const k = KIND_RANK[s.kind] ?? 9;
-    return k * 100000 - qualityScore(s.quality);
+    const qs = qualityScore(s.quality);
+    const cap = state.settings.maxQuality;
+    const overCap = (cap > 0 && qs > cap && qs > 0) ? 1 : 0;
+    return k * 100000 + overCap * 50000 - qs;
   }
 
   // ---------------- player ----------------
@@ -490,7 +573,10 @@
       }
     });
     video.addEventListener('pause', () => saveResume(episodeUrl, video.currentTime));
-    video.addEventListener('ended', () => saveResume(episodeUrl, 0));
+    video.addEventListener('ended', () => {
+      saveResume(episodeUrl, 0);
+      if (state.settings.autoplayNext) goNext();
+    });
   }
 
   function renderSources(sources, episodeUrl) {
@@ -528,7 +614,6 @@
         return;
       }
 
-      // hls
       host.innerHTML = `<video id="__player" controls playsinline autoplay
         style="width:100%;height:100%;background:#000;display:block"></video>`;
       const v = document.getElementById('__player');
@@ -585,6 +670,7 @@
       const label = s.quality && s.quality !== 'auto' ? `${s.quality}` : `${s.kind.toUpperCase()}`;
       btn.textContent = label;
       btn.title = `${s.kind}${s.quality && s.quality !== 'auto' ? ' · ' + s.quality : ''}`;
+      btn.dataset.idx = String(i);
       btn.addEventListener('click', () => play(s, btn));
       list.appendChild(btn);
       if (i === 0) play(s, btn);
@@ -615,15 +701,82 @@
     return out;
   }
 
+  // ---------------- settings modal ----------------
+
+  function openSettings() {
+    $('#maxQuality').value = String(state.settings.maxQuality);
+    $('#autoplayNext').checked = !!state.settings.autoplayNext;
+    $('#settingsModal').hidden = false;
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeSettings() {
+    $('#settingsModal').hidden = true;
+    if ($('#watchModal').hidden) document.body.style.overflow = '';
+  }
+
+  function wireSettings() {
+    $('#settingsBtn').addEventListener('click', openSettings);
+    $('#settingsClose').addEventListener('click', closeSettings);
+    $('#settingsBg').addEventListener('click', closeSettings);
+
+    $('#maxQuality').addEventListener('change', (e) => {
+      state.settings.maxQuality = parseInt(e.target.value, 10) || 0;
+      writeSettings(state.settings);
+    });
+
+    $('#autoplayNext').addEventListener('change', (e) => {
+      state.settings.autoplayNext = !!e.target.checked;
+      writeSettings(state.settings);
+    });
+  }
+
+  // ---------------- keyboard ----------------
+
+  function wireKeyboard(searchInput) {
+    document.addEventListener('keydown', e => {
+      const t = document.activeElement && document.activeElement.tagName;
+      const typing = t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT';
+
+      // `/` focuses search unless typing
+      if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        searchInput.focus();
+        return;
+      }
+
+      // Escape closes topmost modal
+      if (e.key === 'Escape') {
+        if (!$('#settingsModal').hidden) { closeSettings(); return; }
+        if (!$('#watchModal').hidden) { closeWatch(); return; }
+        return;
+      }
+
+      if (typing) return;
+      if ($('#watchModal').hidden) return;
+
+      // n / p — episode navigation
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); goNext(); return; }
+      if (e.key === 'p' || e.key === 'P') { e.preventDefault(); goPrev(); return; }
+
+      // 1–9 — pick Nth server
+      if (/^[1-9]$/.test(e.key)) {
+        const buttons = $$('#sourceList button');
+        const i = parseInt(e.key, 10) - 1;
+        if (buttons[i]) { e.preventDefault(); buttons[i].click(); }
+      }
+    });
+  }
+
   // ---------------- bootstrap ----------------
 
   document.addEventListener('DOMContentLoaded', () => {
-    // nav
+    state.settings = readSettings();
+
     $$('[data-nav="home"]').forEach(el =>
       el.addEventListener('click', e => { e.preventDefault(); showView('home'); })
     );
 
-    // search — submit is immediate, typing debounces
     const searchInput = $('#searchInput');
     $('#searchForm').addEventListener('submit', e => {
       e.preventDefault();
@@ -634,39 +787,29 @@
       debouncedLiveSearch(searchInput.value.trim());
     });
 
-    // back
     $('#animeBack').addEventListener('click', () => {
       if (state.lastQuery) doSearch(state.lastQuery);
       else showView('home');
     });
 
-    // load more
     $('#loadMoreBtn').addEventListener('click', () => {
       if (state.latestEnd) return;
       state.latestPage += 1;
       loadLatest(true);
     });
 
-    // history
     const clearBtn = $('#clearHistory');
     if (clearBtn) clearBtn.addEventListener('click', clearHistory);
 
-    // modal
     $('#watchClose').addEventListener('click', closeWatch);
     $('#modalBg').addEventListener('click', closeWatch);
 
-    // keyboard
-    document.addEventListener('keydown', e => {
-      const t = document.activeElement && document.activeElement.tagName;
-      const typing = t === 'INPUT' || t === 'TEXTAREA';
-      if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault();
-        searchInput.focus();
-      }
-      if (e.key === 'Escape' && !$('#watchModal').hidden) closeWatch();
-    });
+    $('#prevEpBtn').addEventListener('click', goPrev);
+    $('#nextEpBtn').addEventListener('click', goNext);
 
-    // save resume on tab close
+    wireSettings();
+    wireKeyboard(searchInput);
+
     window.addEventListener('beforeunload', () => {
       const v = document.getElementById('__player');
       if (v && currentEpisodeUrl && !v.paused) {
