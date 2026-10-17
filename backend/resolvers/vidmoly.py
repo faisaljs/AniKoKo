@@ -1,7 +1,11 @@
+import logging
 import re
 from typing import Optional
 
 from backend.resolvers.base import BaseResolver
+
+
+logger = logging.getLogger("anikoko.resolver.vidmoly")
 
 
 M3U8_IN_SOURCES_RE = re.compile(
@@ -26,4 +30,5 @@ class VidmolyResolver(BaseResolver):
         if m:
             return m.group(1)
 
+        logger.debug("vidmoly: no m3u8 found in %s", embed_url)
         return None

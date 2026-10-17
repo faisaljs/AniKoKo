@@ -1,7 +1,7 @@
 from typing import Dict, List
 
-from backend.scrapers.desidubanime import DesiDubAnimeScraper
 from backend.scrapers.base import BaseScraper
+from backend.scrapers.desidubanime import DesiDubAnimeScraper
 
 
 _SCRAPERS: Dict[str, BaseScraper] = {

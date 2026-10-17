@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -10,43 +11,7 @@ from bs4 import BeautifulSoup
 from backend.config import USER_AGENT, REQUEST_TIMEOUT, SCRAPE_PROXY
 
 
-# ---------------- URL classification helpers ----------------
-
-SERIES_REJECT = re.compile(r"/(watch|episode|download|ep|watch-online)/", re.I)
-EPISODE_HINT = re.compile(r"(episode|ep[-_]?\d+|\d+x\d+)", re.I)
-
-SERIES_URL_RE = re.compile(r"desidubanime\.me/anime/[^/?#]+/?$", re.I)
-
-EPISODE_URL_PATTERNS = [
-    re.compile(r"desidubanime\.me/watch/[^/?#]+-episode-\d+/", re.I),
-    re.compile(r"desidubanime\.me/watch/[^/?#]+/", re.I),
-    re.compile(r"/watch/[^/?#]+-episode-\d+", re.I),
-]
-
-
-def looks_like_series_url(url: str) -> bool:
-    """A series URL is /anime/<slug>/ with no episode marker."""
-    if not url or url.startswith("#") or url.startswith("javascript:"):
-        return False
-    if not (url.startswith("http://") or url.startswith("https://") or url.startswith("//")):
-        return False
-    if EPISODE_HINT.search(url):
-        return False
-    if SERIES_REJECT.search(url):
-        return False
-    # Only accept /anime/<slug>/ URLs from the provider
-    if "desidubanime.me" in url and not SERIES_URL_RE.search(url):
-        return False
-    return True
-
-
-def is_episode_url(url: str) -> bool:
-    if not url or not url.startswith(("http://", "https://")):
-        return False
-    for pat in EPISODE_URL_PATTERNS:
-        if pat.search(url):
-            return True
-    return False
+logger = logging.getLogger("anikoko.scraper")
 
 
 # ---------------- dataclasses ----------------
@@ -78,11 +43,49 @@ class StreamSource:
 # ---------------- base scraper ----------------
 
 class BaseScraper:
+    """Provider contract.
+
+    Subclasses must set `slug`, `base`, and implement the four async methods.
+    URL classification methods (`is_episode_url`, `looks_like_series_url`)
+    have sensible defaults but should be overridden per provider — the
+    defaults are the desidubanime shape and will silently misfire elsewhere.
+    """
+
     slug: str = ""
     base: str = ""
 
+    # Override in subclasses with provider-specific regexes.
+    SERIES_URL_RE: Optional[re.Pattern] = None
+    EPISODE_URL_RES: List[re.Pattern] = []
+
+    # Set False on providers whose REST API rejects `?search_columns=`.
+    SUPPORTS_SEARCH_COLUMNS: bool = True
+
     def __init__(self):
         self._client: Optional[httpx.AsyncClient] = None
+
+    # -------- url classification (override per provider) --------
+
+    @classmethod
+    def looks_like_series_url(cls, url: str) -> bool:
+        if not url or url.startswith("#") or url.startswith("javascript:"):
+            return False
+        if not (url.startswith("http://") or url.startswith("https://") or url.startswith("//")):
+            return False
+        if cls.SERIES_URL_RE is None:
+            return True
+        return bool(cls.SERIES_URL_RE.search(url))
+
+    @classmethod
+    def is_episode_url(cls, url: str) -> bool:
+        if not url or not url.startswith(("http://", "https://")):
+            return False
+        for pat in cls.EPISODE_URL_RES:
+            if pat.search(url):
+                return True
+        return False
+
+    # -------- http --------
 
     async def client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -101,7 +104,10 @@ class BaseScraper:
 
     async def close(self):
         if self._client is not None:
-            await self._client.aclose()
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
             self._client = None
 
     async def fetch(self, url: str, referer: Optional[str] = None) -> str:
@@ -122,7 +128,8 @@ class BaseScraper:
         html = await self.fetch(url, referer=referer)
         return BeautifulSoup(html, "lxml")
 
-    # --- to be implemented by subclasses ---
+    # -------- contract --------
+
     async def search(self, query: str) -> List[AnimeCard]:
         raise NotImplementedError
 

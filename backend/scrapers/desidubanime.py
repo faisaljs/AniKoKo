@@ -1,5 +1,6 @@
 import base64
 import binascii
+import logging
 import re
 from typing import List, Optional
 from urllib.parse import quote_plus, urljoin
@@ -7,11 +8,14 @@ from urllib.parse import quote_plus, urljoin
 from bs4 import BeautifulSoup
 
 from backend.scrapers.base import (
-    BaseScraper, AnimeCard, Episode, StreamSource, looks_like_series_url,
+    BaseScraper, AnimeCard, Episode, StreamSource,
 )
 from backend.config import PROVIDERS
 from backend.resolvers import resolve_embed
 from backend.utils.m3u8 import extract_m3u8_urls, extract_mp4_urls, extract_embed_sources
+
+
+logger = logging.getLogger("anikoko.scraper.desidubanime")
 
 
 ALIASES = {
@@ -66,6 +70,7 @@ def _b64_try_decode(s: str) -> Optional[str]:
 
 
 def decode_embed_id(value: str) -> Optional[dict]:
+    """data-embed-id is b64(server_name):b64(embed_url)."""
     if not value or ":" not in value:
         return None
     name_b64, _, url_b64 = value.partition(":")
@@ -112,9 +117,20 @@ class DesiDubAnimeScraper(BaseScraper):
     base = PROVIDERS[slug]["base"]
     REST = f"{PROVIDERS[slug]['base']}/wp-json/wp/v2"
 
-    SERIES_URL_RE = re.compile(r"desidubanime\.me/anime/[^/?#]+/?", re.I)
+    # URL classification — provider-specific. Base uses these via classmethods.
+    SERIES_URL_RE = re.compile(r"desidubanime\.me/anime/[^/?#]+/?$", re.I)
+    EPISODE_URL_RES = [
+        re.compile(r"desidubanime\.me/watch/[^/?#]+-episode-\d+/", re.I),
+        re.compile(r"desidubanime\.me/watch/[^/?#]+-ep-?\d+/", re.I),
+        re.compile(r"desidubanime\.me/watch/[^/?#]+/", re.I),
+    ]
+
+    # `?search_columns=` is valid WP core but this theme's REST endpoint
+    # returns 400. Skip tier 2 entirely — falls straight to fuzzy.
+    SUPPORTS_SEARCH_COLUMNS = False
+
     EPISODE_HREF_RE = re.compile(r"desidubanime\.me/watch/[^/?#]+", re.I)
-    NUM_RE_EPISODE = re.compile(r"episode[-_]?(\d+)", re.I)
+    NUM_RE_EPISODE = re.compile(r"(?:episode|ep)[-_]?(\d+)", re.I)
     NUM_RE_SXE = re.compile(r"(\d+)x(\d+)")
     NUM_RE_TAIL = re.compile(r"(\d+)(?!.*\d)")
 
@@ -129,6 +145,8 @@ class DesiDubAnimeScraper(BaseScraper):
         m = self.NUM_RE_TAIL.search(tail)
         return int(m.group(1)) if m else None
 
+    # -------- WP REST helpers --------
+
     async def _wp_search_anime(self, query: str, per_page: int = 24) -> List[dict]:
         url = (
             f"{self.REST}/anime?search={quote_plus(query)}"
@@ -137,7 +155,8 @@ class DesiDubAnimeScraper(BaseScraper):
         try:
             data = await self.fetch_json(url)
             return data if isinstance(data, list) else []
-        except Exception:
+        except Exception as e:
+            logger.debug("wp search (%r) failed: %s", query, e)
             return []
 
     async def _wp_search_anime_columns(self, query: str, per_page: int = 24) -> List[dict]:
@@ -149,7 +168,8 @@ class DesiDubAnimeScraper(BaseScraper):
         try:
             data = await self.fetch_json(url)
             return data if isinstance(data, list) else []
-        except Exception:
+        except Exception as e:
+            logger.debug("wp search_columns (%r) failed: %s", query, e)
             return []
 
     async def _wp_latest_anime(self, page: int = 1, per_page: int = 24) -> List[dict]:
@@ -160,7 +180,8 @@ class DesiDubAnimeScraper(BaseScraper):
         try:
             data = await self.fetch_json(url)
             return data if isinstance(data, list) else []
-        except Exception:
+        except Exception as e:
+            logger.debug("wp latest (page %d) failed: %s", page, e)
             return []
 
     async def _wp_anime_by_slug(self, slug: str) -> Optional[dict]:
@@ -168,7 +189,8 @@ class DesiDubAnimeScraper(BaseScraper):
         try:
             data = await self.fetch_json(url)
             return data[0] if isinstance(data, list) and data else None
-        except Exception:
+        except Exception as e:
+            logger.debug("wp slug (%r) failed: %s", slug, e)
             return None
 
     @staticmethod
@@ -207,7 +229,7 @@ class DesiDubAnimeScraper(BaseScraper):
             href = "https:" + href
         elif href.startswith("/"):
             href = urljoin(self.base, href)
-        if not looks_like_series_url(href):
+        if not self.looks_like_series_url(href):
             return None
 
         title = ""
@@ -247,7 +269,9 @@ class DesiDubAnimeScraper(BaseScraper):
         for i in range(tries):
             try:
                 return await self.fetch(url, referer=self.base)
-            except Exception:
+            except Exception as e:
+                if i == tries - 1:
+                    logger.warning("fetch failed after %d tries (%s): %s", tries, url, e)
                 await _aio.sleep(0.8 * (i + 1))
         return None
 
@@ -279,7 +303,9 @@ class DesiDubAnimeScraper(BaseScraper):
             episodes.append(Episode(title=label, url=href, number=num))
             seen.add(href)
 
-        for m in re.finditer(r'https?://[^"\'\s<>]*desidubanime\.me/watch/[^"\'\s<>]+', html):
+        for m in re.finditer(
+            r'https?://[^"\'\s<>]*desidubanime\.me/watch/[^"\'\s<>]+', html
+        ):
             href = m.group(0)
             if href in seen:
                 continue
@@ -291,6 +317,8 @@ class DesiDubAnimeScraper(BaseScraper):
         episodes.sort(key=lambda e: (e.number is None, e.number or 0))
         return episodes
 
+    # -------- public API --------
+
     async def search(self, query: str) -> List[AnimeCard]:
         raw_q = (query or "").strip()
         if not raw_q:
@@ -300,7 +328,6 @@ class DesiDubAnimeScraper(BaseScraper):
         expanded_q = ALIASES.get(ql, raw_q)
         expanded_ql = expanded_q.lower()
 
-        # ordered list of queries: expanded, raw, then tokens (longest first)
         queries_to_try: List[str] = []
         seen_q: set = set()
 
@@ -329,7 +356,7 @@ class DesiDubAnimeScraper(BaseScraper):
             hay = (c.title + " " + c.url).lower()
             return any(tok in hay for tok in filter_tokens)
 
-        # 1 & 2: accumulate results across every query variant
+        # Tier 1: WP search across query variants
         accumulated: List[AnimeCard] = []
         acc_seen: set = set()
 
@@ -343,7 +370,8 @@ class DesiDubAnimeScraper(BaseScraper):
             if len(accumulated) >= 24:
                 break
 
-        if not accumulated:
+        # Tier 2: search_columns — only where the provider supports it.
+        if not accumulated and self.SUPPORTS_SEARCH_COLUMNS:
             for try_q in queries_to_try:
                 posts = await self._wp_search_anime_columns(try_q)
                 for p in posts:
@@ -357,7 +385,7 @@ class DesiDubAnimeScraper(BaseScraper):
         if accumulated:
             return accumulated[:24]
 
-        # 3. Pull latest ~300 and fuzzy-match locally
+        # Tier 3: fuzzy over latest 300
         try:
             candidates: List[AnimeCard] = []
             for page in (1, 2, 3):
@@ -388,10 +416,10 @@ class DesiDubAnimeScraper(BaseScraper):
                             out.append(c)
                 if out:
                     return out[:24]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("fuzzy search tier failed: %s", e, exc_info=True)
 
-        # 4. HTML search fallback
+        # Tier 4: HTML search fallback
         for try_q in (expanded_q, raw_q):
             try:
                 soup = await self.soup(f"{self.base}/?s={quote_plus(try_q)}")
@@ -403,7 +431,8 @@ class DesiDubAnimeScraper(BaseScraper):
                         out.append(card)
                 if out:
                     return out
-            except Exception:
+            except Exception as e:
+                logger.debug("html search (%r) failed: %s", try_q, e)
                 continue
 
         return []
@@ -482,6 +511,7 @@ class DesiDubAnimeScraper(BaseScraper):
         soup = BeautifulSoup(html, "lxml")
         raw: List[StreamSource] = []
 
+        # 1. data-embed-id — b64-prefixed server + embed URL
         for el in soup.select("[data-embed-id]"):
             decoded = decode_embed_id(el.get("data-embed-id") or "")
             if not decoded:
@@ -493,6 +523,7 @@ class DesiDubAnimeScraper(BaseScraper):
                 referer=url,
             ))
 
+        # 2. direct m3u8 / mp4 in page HTML
         for u in extract_m3u8_urls(html):
             if not _is_noise(u):
                 raw.append(StreamSource(url=u, kind="hls", referer=url))
@@ -500,6 +531,7 @@ class DesiDubAnimeScraper(BaseScraper):
             if not _is_noise(u):
                 raw.append(StreamSource(url=u, kind="mp4", referer=url))
 
+        # 3. iframes
         for ifr in soup.find_all("iframe", src=True):
             src = ifr["src"].strip()
             if src.startswith("//"):
@@ -509,10 +541,15 @@ class DesiDubAnimeScraper(BaseScraper):
             if src.startswith("http") and not _is_noise(src):
                 raw.append(StreamSource(url=src, kind="embed", referer=url))
 
+        # 4. known embed hosts in raw HTML
         for u in extract_embed_sources(html):
             if not _is_noise(u):
                 raw.append(StreamSource(url=u, kind="embed", referer=url))
 
+        # 5. run the resolver chain on embeds; Vidmoly is intentionally
+        #    dropped before that — the CDN is rate-limited and stalls
+        #    playback often enough that a working iframe is better than
+        #    a flaky direct stream.
         resolved: List[StreamSource] = []
         for s in raw:
             lu = s.url.lower()
@@ -522,7 +559,11 @@ class DesiDubAnimeScraper(BaseScraper):
                 if "filesforever" in lu:
                     resolved.append(s)
                     continue
-                m3u8 = await resolve_embed(s.url)
+                try:
+                    m3u8 = await resolve_embed(s.url)
+                except Exception as e:
+                    logger.debug("resolve failed (%s): %s", s.url, e)
+                    m3u8 = None
                 if m3u8 and m3u8 != s.url:
                     resolved.append(StreamSource(
                         url=m3u8,

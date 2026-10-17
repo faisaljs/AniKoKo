@@ -1,8 +1,12 @@
+import logging
 from typing import Optional
 
 import httpx
 
 from backend.config import USER_AGENT, REQUEST_TIMEOUT, SCRAPE_PROXY
+
+
+logger = logging.getLogger("anikoko.resolver")
 
 
 class BaseResolver:
@@ -29,6 +33,30 @@ class BaseResolver:
             kwargs["proxy"] = SCRAPE_PROXY
         async with httpx.AsyncClient(**kwargs) as client:
             r = await client.get(url)
+            r.raise_for_status()
+            return r.text
+
+    async def post_form(
+        self,
+        url: str,
+        body: str,
+        referer: Optional[str] = None,
+        extra_headers: Optional[dict] = None,
+    ) -> str:
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Accept": "application/json, text/plain, */*",
+        }
+        if referer:
+            headers["Referer"] = referer
+        if extra_headers:
+            headers.update(extra_headers)
+        kwargs = dict(headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=True)
+        if SCRAPE_PROXY:
+            kwargs["proxy"] = SCRAPE_PROXY
+        async with httpx.AsyncClient(**kwargs) as client:
+            r = await client.post(url, content=body)
             r.raise_for_status()
             return r.text
 
