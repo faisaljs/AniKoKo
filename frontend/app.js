@@ -52,9 +52,10 @@
     lastQuery: null,
     searchSeq: 0,
     searchController: null,
-    episodes: [],           // current anime's episodes
+    episodes: [],
     currentEpisodeIndex: -1,
     settings: { ...DEFAULT_SETTINGS },
+    activeGenre: null,      // { id: number, name: string } | null
   };
 
   // ---------------- history ----------------
@@ -75,6 +76,13 @@
   function recordWatch(entry) {
     const arr = readHistory().filter(e => e.episodeUrl !== entry.episodeUrl);
     arr.unshift({ ...entry, t: Date.now() });
+    writeHistory(arr);
+    renderContinue();
+  }
+
+  function removeFromHistory(episodeUrl) {
+    if (!episodeUrl) return;
+    const arr = readHistory().filter(e => e.episodeUrl !== episodeUrl);
     writeHistory(arr);
     renderContinue();
   }
@@ -111,9 +119,26 @@
     writeResumeMap(m);
   }
 
+  function markCompleted(url) {
+    if (!url) return;
+    const m = readResumeMap();
+    m[url] = { t: 0, completed: true, at: Date.now() };
+    writeResumeMap(m);
+  }
+
   function getResume(url) {
     const m = readResumeMap();
-    return (m[url] && Number(m[url].t)) || 0;
+    const e = m[url];
+    return (e && Number(e.t)) || 0;
+  }
+
+  function getEpisodeState(url) {
+    const m = readResumeMap();
+    const e = m[url];
+    if (!e) return 'unwatched';
+    if (e.completed) return 'completed';
+    if ((e.t || 0) > 3) return 'in-progress';
+    return 'unwatched';
   }
 
   // ---------------- settings ----------------
@@ -137,8 +162,11 @@
   // ---------------- api ----------------
 
   const api = {
-    latest: (page = 1) =>
-      fetchJson(`${API_BASE}/api/latest?page=${page}`),
+    latest: (page = 1, genre = null) => {
+      let u = `${API_BASE}/api/latest?page=${page}`;
+      if (genre) u += `&genre=${genre}`;
+      return fetchJson(u);
+    },
     search: (q, signal) =>
       fetchJson(`${API_BASE}/api/search?q=${encodeURIComponent(q)}`, { signal }),
     anime: (url, provider) =>
@@ -229,12 +257,14 @@
     btn.disabled = true;
     btn.textContent = 'Loading…';
     try {
-      const data = await api.latest(state.latestPage);
+      const data = await api.latest(state.latestPage, state.activeGenre?.id || null);
       const items = data.items || [];
       const html = items.map(cardHTML).join('');
       if (append) grid.insertAdjacentHTML('beforeend', html);
       else grid.innerHTML = html || '<p class="empty">No items.</p>';
       wireCards(grid);
+      // "No more" only fires when a page returns zero items — partial pages
+      // are not the end of the list (WP pagination can return 6, 12, etc.)
       if (items.length === 0) {
         state.latestEnd = true;
         btn.textContent = 'No more';
@@ -281,6 +311,10 @@
           <div class="thumb">
             ${poster ? `<img loading="lazy" src="${esc(poster)}" alt="">` : ''}
             ${resumeTag}
+            <button type="button" class="remove-btn"
+                    data-ep-url="${esc(e.episodeUrl)}"
+                    aria-label="Remove from continue watching"
+                    title="Remove">✕</button>
           </div>
           <div class="meta">
             <h3>${esc(e.animeTitle || 'Untitled')}</h3>
@@ -303,6 +337,82 @@
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
       });
     });
+
+    // × buttons — stopPropagation so the card's open handler doesn't fire
+    $$('.remove-btn', grid).forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        removeFromHistory(btn.dataset.epUrl);
+      });
+      btn.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          removeFromHistory(btn.dataset.epUrl);
+        }
+      });
+    });
+  }
+
+  // ---------------- genres ----------------
+
+  async function loadGenres() {
+    const bar = $('#genreBar');
+    if (!bar) return;
+    try {
+      const data = await fetchJson(`${API_BASE}/api/genres`);
+      const items = (data.items || []).slice(0, 40);
+      if (!items.length) { bar.hidden = true; return; }
+
+      const allChip = document.createElement('button');
+      allChip.type = 'button';
+      allChip.className = 'genre-chip active';
+      allChip.dataset.genre = '';
+      allChip.textContent = 'All';
+      bar.innerHTML = '';
+      bar.appendChild(allChip);
+
+      for (const g of items) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'genre-chip';
+        btn.dataset.genre = String(g.id);
+        btn.dataset.name = g.name;
+        btn.title = `${g.name} · ${g.count}`;
+        btn.textContent = g.name;
+        bar.appendChild(btn);
+      }
+
+      bar.hidden = false;
+      $$('.genre-chip', bar).forEach(chip => {
+        chip.addEventListener('click', () => selectGenre(chip.dataset.genre || '', chip.dataset.name || 'All'));
+      });
+    } catch (e) {
+      console.warn('[AniKoKo] genres failed:', e);
+      bar.hidden = true;
+    }
+  }
+
+  function selectGenre(idStr, name) {
+    const id = idStr ? parseInt(idStr, 10) : null;
+    state.activeGenre = id ? { id, name } : null;
+
+    $$('.genre-chip').forEach(b => {
+      b.classList.toggle('active', (b.dataset.genre || '') === (idStr || ''));
+    });
+
+    const active = $('.genre-chip.active');
+    if (active && active.scrollIntoView) {
+      active.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    }
+
+    const h = $('#latestHeading');
+    if (h) h.textContent = state.activeGenre ? state.activeGenre.name : 'Latest';
+
+    state.latestPage = 1;
+    state.latestEnd = false;
+    loadLatest(false);
   }
 
   // ---------------- search ----------------
@@ -316,7 +426,6 @@
     $('#searchGrid').innerHTML = skeleton(8);
     $('#searchEmpty').hidden = true;
 
-    // Cancel any in-flight search
     if (state.searchController) {
       try { state.searchController.abort(); } catch {}
     }
@@ -350,6 +459,32 @@
 
   // ---------------- anime detail ----------------
 
+  function updateResumeBtn(provider, animeTitle) {
+    const btn = $('#resumeBtn');
+    const eps = state.episodes;
+    if (!eps || !eps.length) { btn.hidden = true; return; }
+
+    let inProgress = null;
+    let firstUnwatched = null;
+    for (const ep of eps) {
+      const st = getEpisodeState(ep.url);
+      if (st === 'in-progress' && !inProgress) inProgress = ep;
+      if (st === 'unwatched' && !firstUnwatched) firstUnwatched = ep;
+    }
+
+    const target = inProgress || firstUnwatched;
+    if (!target) {
+      btn.hidden = true;
+      btn.onclick = null;
+      return;
+    }
+
+    const label = target.title || (target.number ? `Episode ${target.number}` : 'Episode');
+    btn.textContent = inProgress ? `Resume ${label}` : `Play ${label}`;
+    btn.hidden = false;
+    btn.onclick = () => openWatch(target.url, provider, animeTitle || '', label);
+  }
+
   async function openAnime(url, provider) {
     state.lastAnime = { url, provider, poster: null };
     state.episodes = [];
@@ -362,12 +497,15 @@
     const dProv   = $('#dProvider');
     const epList  = $('#epList');
     const epCount = $('#epCount');
+    const resumeBtn = $('#resumeBtn');
 
     dTitle.textContent = 'Loading…';
     dPoster.removeAttribute('src');
     dSyn.textContent = '';
     dProv.textContent = provider || '';
     epCount.textContent = '';
+    resumeBtn.hidden = true;
+    resumeBtn.onclick = null;
     epList.innerHTML = '<p class="empty">Loading episodes…</p>';
 
     try {
@@ -399,7 +537,10 @@
         b.addEventListener('click', () =>
           openWatch(b.dataset.url, provider, data.title || '', b.dataset.title || '')
         );
+        const st = getEpisodeState(b.dataset.url);
+        if (st === 'in-progress' || st === 'completed') b.classList.add(st);
       });
+      updateResumeBtn(provider, data.title);
     } catch (e) {
       dTitle.textContent = 'Failed to load';
       dSyn.textContent = e.message || String(e);
@@ -426,7 +567,6 @@
     currentAnimeUrl = animeUrlOverride || (state.lastAnime ? state.lastAnime.url : null);
     currentPoster = posterOverride || (state.lastAnime ? state.lastAnime.poster : null) || null;
 
-    // find index in the current anime's episode list (if any)
     state.currentEpisodeIndex = state.episodes.findIndex(e => e.url === episodeUrl);
     updateEpNav();
 
@@ -443,7 +583,7 @@
       recordWatch({
         animeUrl: currentAnimeUrl,
         animeTitle,
-        poster: currentPoster,      // raw URL
+        poster: currentPoster,
         provider,
         episodeUrl,
         episodeTitle: epTitle,
@@ -522,6 +662,18 @@
     $('#watchModal').hidden = true;
     document.body.style.overflow = '';
     currentEpisodeUrl = null;
+
+    // refresh episode state badges + resume button in the detail view behind
+    if (state.episodes.length) {
+      $$('#epList button').forEach(b => {
+        b.classList.remove('in-progress', 'completed');
+        const st = getEpisodeState(b.dataset.url);
+        if (st !== 'unwatched') b.classList.add(st);
+      });
+      if (state.lastAnime) {
+        updateResumeBtn(state.lastAnime.provider, $('#dTitle').textContent);
+      }
+    }
   }
 
   async function ensureHlsLib() {
@@ -574,7 +726,7 @@
     });
     video.addEventListener('pause', () => saveResume(episodeUrl, video.currentTime));
     video.addEventListener('ended', () => {
-      saveResume(episodeUrl, 0);
+      markCompleted(episodeUrl);
       if (state.settings.autoplayNext) goNext();
     });
   }
@@ -738,14 +890,12 @@
       const t = document.activeElement && document.activeElement.tagName;
       const typing = t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT';
 
-      // `/` focuses search unless typing
       if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         searchInput.focus();
         return;
       }
 
-      // Escape closes topmost modal
       if (e.key === 'Escape') {
         if (!$('#settingsModal').hidden) { closeSettings(); return; }
         if (!$('#watchModal').hidden) { closeWatch(); return; }
@@ -755,11 +905,9 @@
       if (typing) return;
       if ($('#watchModal').hidden) return;
 
-      // n / p — episode navigation
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); goNext(); return; }
       if (e.key === 'p' || e.key === 'P') { e.preventDefault(); goPrev(); return; }
 
-      // 1–9 — pick Nth server
       if (/^[1-9]$/.test(e.key)) {
         const buttons = $$('#sourceList button');
         const i = parseInt(e.key, 10) - 1;
@@ -817,7 +965,6 @@
       }
     });
 
-    // deep link
     const h = location.hash.replace(/^#/, '');
     if (h) {
       const params = new URLSearchParams(h);
@@ -829,6 +976,7 @@
     }
 
     renderContinue();
+    loadGenres();
     loadLatest();
   });
 })();

@@ -152,6 +152,33 @@ button { font: inherit; color: inherit; }
   backdrop-filter: blur(4px);
 }
 
+/* remove-from-history × on continue-watching cards */
+.remove-btn {
+  position: absolute; top: 6px; right: 6px;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: rgba(0,0,0,.78); border: 1px solid rgba(255,255,255,.15);
+  color: #fff; font-size: 11px; cursor: pointer;
+  display: grid; place-items: center;
+  opacity: 0;
+  transition: opacity .15s, background .15s, border-color .15s;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 2;
+  padding: 0;
+  line-height: 1;
+}
+.continue-card:hover .remove-btn,
+.continue-card:focus-within .remove-btn { opacity: 1; }
+.remove-btn:hover,
+.remove-btn:focus-visible {
+  background: var(--accent);
+  border-color: var(--accent);
+  opacity: 1;
+}
+@media (hover: none) {
+  .continue-card .remove-btn { opacity: 1; }
+}
+
 /* skeleton */
 .card.skeleton { pointer-events: none; }
 .card.skeleton .thumb,
@@ -199,6 +226,22 @@ button { font: inherit; color: inherit; }
 .syn { color: var(--muted); line-height: 1.65; font-size: 14px; }
 
 /* episodes */
+.ep-actions {
+  display: flex; gap: 12px; align-items: center;
+}
+#resumeBtn {
+  border: 1px solid var(--accent); background: transparent;
+  color: var(--accent); padding: 6px 14px;
+  border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 12px; font-weight: 700;
+  letter-spacing: .3px;
+  transition: background .15s, color .15s;
+  max-width: 220px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#resumeBtn:hover { background: rgba(255,77,109,.12); }
+#resumeBtn:active { background: rgba(255,77,109,.2); }
+
 .ep-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -211,8 +254,68 @@ button { font: inherit; color: inherit; }
   font-weight: 600;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: border-color .15s, color .15s, background .15s;
+  position: relative;
 }
 .ep-list button:hover { border-color: var(--accent); color: var(--accent); }
+
+/* episode state badges */
+.ep-list button.in-progress {
+  border-color: rgba(255,77,109,.4);
+}
+.ep-list button.in-progress::after {
+  content: '';
+  position: absolute; bottom: 6px; right: 6px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(255,77,109,.6);
+}
+.ep-list button.completed {
+  color: var(--muted);
+}
+.ep-list button.completed::after {
+  content: '✓';
+  position: absolute; bottom: 3px; right: 7px;
+  font-size: 11px; font-weight: 700;
+  color: rgba(255,255,255,.4);
+}
+.ep-list button.completed:hover {
+  color: var(--accent);
+}
+
+/* genre bar */
+.genre-bar {
+  display: flex; gap: 8px;
+  overflow-x: auto;
+  padding: 4px 2px 14px;
+  margin: 0 -2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+  -webkit-overflow-scrolling: touch;
+}
+.genre-bar::-webkit-scrollbar { height: 6px; }
+.genre-bar::-webkit-scrollbar-thumb {
+  background: var(--line); border-radius: 3px;
+}
+.genre-bar::-webkit-scrollbar-track { background: transparent; }
+
+.genre-chip {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--fg);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px; font-weight: 600;
+  white-space: nowrap;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.genre-chip:hover { border-color: var(--accent); color: var(--accent); }
+.genre-chip.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: var(--accent);
+  color: #fff;
+}
 
 /* empty state */
 .empty { color: var(--muted); padding: 40px 0; text-align: center; }
@@ -375,6 +478,8 @@ button { font: inherit; color: inherit; }
   .player-wrap { aspect-ratio: auto; height: 56.25vw; max-height: 50dvh; }
   .settings-body { height: auto; max-height: 100dvh; border-radius: 0; }
   .ep-nav button { min-width: 0; flex: 1; }
+  .ep-actions { gap: 8px; }
+  #resumeBtn { padding: 6px 10px; font-size: 11px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

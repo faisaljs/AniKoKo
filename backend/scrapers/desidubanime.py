@@ -1,5 +1,6 @@
 import base64
 import binascii
+import html as _html
 import logging
 import re
 from typing import List, Optional
@@ -172,16 +173,23 @@ class DesiDubAnimeScraper(BaseScraper):
             logger.debug("wp search_columns (%r) failed: %s", query, e)
             return []
 
-    async def _wp_latest_anime(self, page: int = 1, per_page: int = 24) -> List[dict]:
+    async def _wp_latest_anime(
+        self,
+        page: int = 1,
+        per_page: int = 24,
+        genre: Optional[int] = None,
+    ) -> List[dict]:
         url = (
             f"{self.REST}/anime?per_page={per_page}&page={page}"
             f"&_embed=wp:featuredmedia"
         )
+        if genre:
+            url += f"&genre={int(genre)}"
         try:
             data = await self.fetch_json(url)
             return data if isinstance(data, list) else []
         except Exception as e:
-            logger.debug("wp latest (page %d) failed: %s", page, e)
+            logger.debug("wp latest (page %d, genre %s) failed: %s", page, genre, e)
             return []
 
     async def _wp_anime_by_slug(self, slug: str) -> Optional[dict]:
@@ -317,6 +325,39 @@ class DesiDubAnimeScraper(BaseScraper):
         episodes.sort(key=lambda e: (e.number is None, e.number or 0))
         return episodes
 
+    # -------- genres --------
+
+    async def genres(self) -> List[dict]:
+        url = (
+            f"{self.REST}/genre?per_page=100"
+            f"&orderby=count&order=desc&hide_empty=true"
+        )
+        try:
+            data = await self.fetch_json(url)
+        except Exception as e:
+            logger.warning("wp genres fetch failed: %s", e, exc_info=True)
+            return []
+        if not isinstance(data, list):
+            return []
+
+        out: List[dict] = []
+        for term in data:
+            if not isinstance(term, dict):
+                continue
+            raw_name = term.get("name") or ""
+            if not raw_name:
+                continue
+            count = int(term.get("count") or 0)
+            if count <= 0:
+                continue
+            out.append({
+                "id": int(term["id"]),
+                "name": _html.unescape(raw_name),
+                "slug": term.get("slug") or "",
+                "count": count,
+            })
+        return out
+
     # -------- public API --------
 
     async def search(self, query: str) -> List[AnimeCard]:
@@ -437,12 +478,19 @@ class DesiDubAnimeScraper(BaseScraper):
 
         return []
 
-    async def latest(self, page: int = 1) -> List[AnimeCard]:
-        posts = await self._wp_latest_anime(page=page)
+    async def latest(
+        self,
+        page: int = 1,
+        genre: Optional[int] = None,
+    ) -> List[AnimeCard]:
+        posts = await self._wp_latest_anime(page=page, genre=genre)
         cards = [c for c in (self._card_from_wp(p) for p in posts) if c]
         if cards:
             return cards
 
+        # HTML fallback path doesn't support genre filtering — the provider's
+        # HTML pagination uses different URL patterns. If the REST call
+        # succeeded above we never get here.
         url = self.base if page <= 1 else f"{self.base}/page/{page}/"
         soup = await self.soup(url)
         seen, out = set(), []

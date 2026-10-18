@@ -66,6 +66,11 @@ def _json_error(status: int, message: str, hint: Optional[str] = None):
     return JSONResponse(body, status_code=status)
 
 
+@app.exception_handler(RequestValidationError)
+async def _validation_handler(request: Request, exc: RequestValidationError):
+    return _json_error(422, "invalid request", str(exc.errors())[:300])
+
+
 @app.exception_handler(HTTPException)
 async def _http_exc_handler(request: Request, exc: HTTPException):
     return _json_error(exc.status_code, str(exc.detail))
@@ -81,7 +86,8 @@ async def root():
         "docs": "/docs",
         "endpoints": {
             "providers": "/api/providers",
-            "latest": "/api/latest?provider=desidubanime&page=1",
+            "genres": "/api/genres",
+            "latest": "/api/latest?provider=desidubanime&page=1&genre=18",
             "search": "/api/search?q=naruto&provider=desidubanime",
             "anime": "/api/anime?url=<series_url>&provider=desidubanime",
             "sources": "/api/sources?url=<episode_url>&provider=desidubanime",
@@ -103,6 +109,55 @@ async def health():
 @app.get("/api/providers")
 async def api_providers():
     return [{"slug": s, **PROVIDERS[s]} for s in slugs()]
+
+
+# ---------------- genres ----------------
+
+async def _load_genres(provider: Optional[str]) -> List[dict]:
+    """Fetch (or read cached) merged genre list for the given provider(s).
+
+    Cache key and TTL are shared with the /api/genres route so validation in
+    /api/latest doesn't cause a second scrape. Returns [] if the provider has
+    no genre taxonomy — callers must tolerate that.
+    """
+    key = f"genres:{provider}"
+    hit = cache.get(key)
+    if hit is not None:
+        return hit.get("items", [])
+
+    scrapers = [get_scraper(provider)] if provider else all_scrapers()
+
+    async def run(s):
+        try:
+            return await s.genres()
+        except Exception as e:
+            logger.warning("scraper %s genres failed: %s", s.slug, e, exc_info=True)
+            return []
+
+    results = await asyncio.gather(*(run(s) for s in scrapers))
+
+    flat: List[dict] = []
+    seen = set()
+    for r in results:
+        if not isinstance(r, list):
+            continue
+        for g in r:
+            if g["id"] in seen:
+                continue
+            seen.add(g["id"])
+            flat.append(g)
+
+    payload = {"items": flat}
+    # Genres change rarely — 20 min TTL, 4× the list TTL.
+    cache.set(key, payload, CACHE_TTL_LIST * 4)
+    return flat
+
+
+@app.get("/api/genres")
+async def api_genres(provider: Optional[str] = None):
+    if provider and provider not in slugs():
+        raise HTTPException(404, "unknown provider")
+    return {"items": await _load_genres(provider)}
 
 
 # ---------------- admin ----------------
@@ -132,20 +187,37 @@ async def admin_resolvers():
 # ---------------- content ----------------
 
 @app.get("/api/latest")
-async def api_latest(provider: Optional[str] = None, page: int = 1):
-    key = f"latest:{provider}:{page}"
+async def api_latest(
+    provider: Optional[str] = None,
+    page: int = 1,
+    genre: Optional[int] = None,
+):
+    if provider and provider not in slugs():
+        raise HTTPException(404, "unknown provider")
+
+    # Validate genre ID against the known taxonomy before hitting WP.
+    # WordPress silently ignores unknown term IDs and returns unfiltered
+    # results — validating here gives clients a predictable empty response
+    # instead of a misleading "unfiltered latest" payload.
+    #
+    # `known and` guard: if the provider has no genre taxonomy at all
+    # (returns []), skip validation entirely — a stray genre param on a
+    # no-genre provider shouldn't empty every response.
+    if genre is not None:
+        known = {g["id"] for g in await _load_genres(provider)}
+        if known and genre not in known:
+            return {"items": []}
+
+    key = f"latest:{provider}:{page}:{genre}"
     hit = cache.get(key)
     if hit is not None:
         return hit
-
-    if provider and provider not in slugs():
-        raise HTTPException(404, "unknown provider")
 
     scrapers = [get_scraper(provider)] if provider else all_scrapers()
 
     async def run(s):
         try:
-            items = await s.latest(page=page)
+            items = await s.latest(page=page, genre=genre)
             return [c.__dict__ for c in items]
         except Exception as e:
             logger.warning("scraper %s failed: %s", s.slug, e, exc_info=True)

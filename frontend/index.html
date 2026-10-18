@@ -45,12 +45,13 @@
     <div id="continueSection" hidden>
       <div class="row-head">
         <h2>Continue Watching</h2>
-        <button class="link-btn" id="clearHistory" type="button">Clear</button>
+        <button class="link-btn" id="clearHistory" type="button">Clear all</button>
       </div>
       <div id="continueGrid" class="grid"></div>
     </div>
 
-    <div class="row-head"><h2>Latest</h2></div>
+    <div class="row-head"><h2 id="latestHeading">Latest</h2></div>
+    <div class="genre-bar" id="genreBar" hidden></div>
     <div id="latestGrid" class="grid"></div>
     <div class="load-more">
       <button id="loadMoreBtn" type="button">Load more</button>
@@ -78,7 +79,10 @@
     </div>
     <div class="row-head">
       <h2>Episodes</h2>
-      <span class="muted" id="epCount"></span>
+      <div class="ep-actions">
+        <span class="muted" id="epCount"></span>
+        <button type="button" id="resumeBtn" hidden>Resume</button>
+      </div>
     </div>
     <div id="epList" class="ep-list"></div>
   </section>
@@ -87,7 +91,6 @@
 
 <footer class="foot"><span>AniKoKo — DesiDubAnime front-end</span></footer>
 
-<!-- watch modal -->
 <div id="watchModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="wTitle">
   <div class="modal-bg" id="modalBg"></div>
   <div class="modal-body">
@@ -117,7 +120,6 @@
   </div>
 </div>
 
-<!-- settings modal -->
 <div id="settingsModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
   <div class="modal-bg" id="settingsBg"></div>
   <div class="modal-body settings-body">

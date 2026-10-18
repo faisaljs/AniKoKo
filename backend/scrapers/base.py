@@ -133,7 +133,11 @@ class BaseScraper:
     async def search(self, query: str) -> List[AnimeCard]:
         raise NotImplementedError
 
-    async def latest(self, page: int = 1) -> List[AnimeCard]:
+    async def latest(
+        self,
+        page: int = 1,
+        genre: Optional[int] = None,
+    ) -> List[AnimeCard]:
         raise NotImplementedError
 
     async def anime_detail(self, url: str) -> dict:
@@ -141,3 +145,11 @@ class BaseScraper:
 
     async def episode_sources(self, url: str) -> List[StreamSource]:
         raise NotImplementedError
+
+    async def genres(self) -> List[dict]:
+        """Return provider genre list as [{id, name, slug, count}, ...].
+
+        Providers without a taxonomy can leave this as the default — returns [].
+        Callers must tolerate an empty list.
+        """
+        return []
