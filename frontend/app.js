@@ -488,6 +488,38 @@
     btn.onclick = () => openWatch(target.url, provider, animeTitle || '', label);
   }
 
+  function renderEpisodes() {
+    const list = $('#epList');
+    const eps = state.episodes || [];
+    const query = ($('#episodeFilter')?.value || '').trim().toLowerCase();
+    const order = $('#episodeOrder')?.value || 'asc';
+    const visible = eps.filter(ep => {
+      const label = ep.title || (ep.number ? `Episode ${ep.number}` : 'Episode');
+      return !query || label.toLowerCase().includes(query) || String(ep.number || '').includes(query);
+    });
+    if (order === 'desc') visible.reverse();
+
+    const count = $('#epCount');
+    count.textContent = visible.length === eps.length
+      ? `${eps.length} ${eps.length === 1 ? 'episode' : 'episodes'}`
+      : `${visible.length} of ${eps.length} episodes`;
+    $('#episodeEmpty').hidden = visible.length > 0 || eps.length === 0;
+    list.innerHTML = visible.map(ep => {
+      const label = ep.title || (ep.number ? `Episode ${ep.number}` : 'Episode');
+      return `<button type="button" data-url="${esc(ep.url)}" data-title="${esc(label)}" title="${esc(label)}">
+        <span>${esc(label)}</span><span class="episode-play" aria-hidden="true">▶</span>
+      </button>`;
+    }).join('');
+
+    $$('#epList button').forEach(button => {
+      button.addEventListener('click', () =>
+        openWatch(button.dataset.url, state.lastAnime?.provider || '', $('#dTitle').textContent, button.dataset.title || '')
+      );
+      const status = getEpisodeState(button.dataset.url);
+      if (status !== 'unwatched') button.classList.add(status);
+    });
+  }
+
   async function openAnime(url, provider) {
     state.lastAnime = { url, provider, poster: null };
     state.episodes = [];
@@ -502,6 +534,8 @@
     const epList  = $('#epList');
     const epCount = $('#epCount');
     const resumeBtn = $('#resumeBtn');
+    const playFirstBtn = $('#playFirstBtn');
+    const episodeToolbar = $('#episodeToolbar');
 
     dTitle.textContent = 'Loading…';
     dPoster.removeAttribute('src');
@@ -510,6 +544,12 @@
     epCount.textContent = '';
     resumeBtn.hidden = true;
     resumeBtn.onclick = null;
+    playFirstBtn.hidden = true;
+    playFirstBtn.onclick = null;
+    episodeToolbar.hidden = true;
+    $('#episodeFilter').value = '';
+    $('#episodeOrder').value = 'asc';
+    $('#episodeEmpty').hidden = true;
     epList.innerHTML = '<p class="empty">Loading episodes…</p>';
 
     try {
@@ -529,22 +569,19 @@
         ep && ep.url && /^https?:\/\//i.test(ep.url)
       );
       state.episodes = eps;
-      epCount.textContent = eps.length ? `${eps.length} episodes` : '';
       if (!eps.length) {
+        epCount.textContent = '';
         epList.innerHTML = '<p class="empty">No episodes detected.</p>';
         return;
       }
-      epList.innerHTML = eps.map(ep => {
-        const label = ep.title || (ep.number ? `Episode ${ep.number}` : 'Episode');
-        return `<button type="button" data-url="${esc(ep.url)}" data-title="${esc(label)}" title="${esc(label)}">${esc(label)}</button>`;
-      }).join('');
-      $$('#epList button').forEach(b => {
-        b.addEventListener('click', () =>
-          openWatch(b.dataset.url, provider, data.title || '', b.dataset.title || '')
-        );
-        const st = getEpisodeState(b.dataset.url);
-        if (st === 'in-progress' || st === 'completed') b.classList.add(st);
-      });
+      episodeToolbar.hidden = false;
+      playFirstBtn.hidden = false;
+      playFirstBtn.onclick = () => {
+        const first = eps[0];
+        const label = first.title || (first.number ? `Episode ${first.number}` : 'Episode');
+        openWatch(first.url, provider, data.title || '', label);
+      };
+      renderEpisodes();
       updateResumeBtn(provider, data.title);
     } catch (e) {
       if (requestSeq !== state.animeSeq) return;
@@ -989,6 +1026,9 @@
 
     wireSettings();
     wireKeyboard(searchInput);
+
+    $('#episodeFilter').addEventListener('input', renderEpisodes);
+    $('#episodeOrder').addEventListener('change', renderEpisodes);
 
     window.addEventListener('beforeunload', () => {
       const v = document.getElementById('__player');

@@ -75,16 +75,35 @@
           <span class="tag">Hindi Dub</span>
         </div>
         <p class="syn" id="dSyn"></p>
+        <div class="detail-actions">
+          <button type="button" id="playFirstBtn" hidden>▶ <span>Play first available</span></button>
+        </div>
       </div>
     </div>
     <div class="row-head">
-      <h2>Episodes</h2>
-      <div class="ep-actions">
+      <div class="section-title">
+        <h2>Episodes</h2>
         <span class="muted" id="epCount"></span>
+      </div>
+      <div class="ep-actions">
         <button type="button" id="resumeBtn" hidden>Resume</button>
       </div>
     </div>
+    <div class="episode-toolbar" id="episodeToolbar" hidden>
+      <label class="episode-search" for="episodeFilter">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="episodeFilter" type="search" placeholder="Find an episode" autocomplete="off" />
+      </label>
+      <label class="episode-sort" for="episodeOrder">
+        <span>Order</span>
+        <select id="episodeOrder">
+          <option value="asc">Oldest first</option>
+          <option value="desc">Newest first</option>
+        </select>
+      </label>
+    </div>
     <div id="epList" class="ep-list"></div>
+    <p class="empty episode-empty" id="episodeEmpty" hidden>No episodes match that search.</p>
   </section>
 
 </main>
