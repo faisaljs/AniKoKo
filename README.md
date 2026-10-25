@@ -16,12 +16,11 @@ frontend/  — Single-page client (HTML + CSS + vanilla JS)
 ### 1. Backend
 
 ```bash
-cd backend
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env             # edit if you need a proxy
-python3 main.py
+cp backend/.env.example backend/.env   # edit if you need a proxy
+python3 -m backend.main
 ```
 
 API lives at `http://localhost:8000` — docs at `/docs`.

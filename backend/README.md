@@ -4,12 +4,15 @@ FastAPI service. Scrapes DesiDubAnime (kiranime WP theme), normalizes metadata a
 
 ## Run
 
+Run these commands from the repository root (the directory containing
+`requirements.txt`):
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-python3 main.py
+cp backend/.env.example backend/.env
+python3 -m backend.main
 ```
 
 ## Environment

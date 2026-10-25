@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
 API_VERSION = "1.1.0"
 
@@ -37,4 +39,8 @@ PROVIDERS = {
 SCRAPE_PROXY = os.getenv("ANIKOKO_SCRAPE_PROXY")  # "http://user:pass@host:port"
 
 # CORS — allow any origin so external frontends can consume the API.
-CORS_ORIGINS = os.getenv("ANIKOKO_CORS_ORIGINS", "*").split(",")
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ANIKOKO_CORS_ORIGINS", "*").split(",")
+    if origin.strip()
+]

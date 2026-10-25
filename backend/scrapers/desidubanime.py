@@ -4,7 +4,7 @@ import html as _html
 import logging
 import re
 from typing import List, Optional
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -119,11 +119,11 @@ class DesiDubAnimeScraper(BaseScraper):
     REST = f"{PROVIDERS[slug]['base']}/wp-json/wp/v2"
 
     # URL classification — provider-specific. Base uses these via classmethods.
-    SERIES_URL_RE = re.compile(r"desidubanime\.me/anime/[^/?#]+/?$", re.I)
+    SERIES_URL_RE = re.compile(r"^https?://(?:www\.)?desidubanime\.me/anime/[^/?#]+/?$", re.I)
     EPISODE_URL_RES = [
-        re.compile(r"desidubanime\.me/watch/[^/?#]+-episode-\d+/", re.I),
-        re.compile(r"desidubanime\.me/watch/[^/?#]+-ep-?\d+/", re.I),
-        re.compile(r"desidubanime\.me/watch/[^/?#]+/", re.I),
+        re.compile(r"^https?://(?:www\.)?desidubanime\.me/watch/[^/?#]+-episode-\d+/?$", re.I),
+        re.compile(r"^https?://(?:www\.)?desidubanime\.me/watch/[^/?#]+-ep-?\d+/?$", re.I),
+        re.compile(r"^https?://(?:www\.)?desidubanime\.me/watch/[^/?#]+/?$", re.I),
     ]
 
     # `?search_columns=` is valid WP core but this theme's REST endpoint
@@ -215,6 +215,44 @@ class DesiDubAnimeScraper(BaseScraper):
         except Exception:
             return None
 
+    @staticmethod
+    def _looks_like_site_art(url: Optional[str]) -> bool:
+        if not url:
+            return False
+        filename = urlparse(url).path.rsplit("/", 1)[-1].lower()
+        return any(word in filename for word in ("logo", "banner", "placeholder"))
+
+    def _poster_from_html(self, soup: BeautifulSoup, title: str) -> Optional[str]:
+        """Find the anime artwork in page images, skipping shared site branding."""
+        normalized_title = re.sub(r"\W+", " ", title.lower()).strip()
+        candidates = []
+        for img in soup.find_all("img"):
+            src = (
+                img.get("data-src")
+                or img.get("data-lazy-src")
+                or img.get("data-original")
+                or img.get("src")
+            )
+            if not src:
+                continue
+            absolute = urljoin(self.base, src.strip())
+            if self._looks_like_site_art(absolute):
+                continue
+
+            alt = re.sub(r"\W+", " ", (img.get("alt") or "").lower()).strip()
+            image_url = absolute.lower()
+            known_art_host = (
+                "cdn.myanimelist.net/images/anime/" in image_url
+                or "anilist.co/file/anilistcdn/media/anime/cover/" in image_url
+            )
+            if normalized_title and alt and (
+                normalized_title in alt or alt in normalized_title
+            ):
+                return absolute
+            if known_art_host:
+                candidates.append(absolute)
+        return candidates[0] if candidates else None
+
     def _card_from_wp(self, post: dict) -> Optional[AnimeCard]:
         title = (post.get("title") or {}).get("rendered") or ""
         title = BeautifulSoup(title, "lxml").get_text(strip=True)
@@ -302,7 +340,15 @@ class DesiDubAnimeScraper(BaseScraper):
                 continue
             if not self.EPISODE_HREF_RE.search(href):
                 continue
-            if re.search(r"/watch/[^/?#]+-anime/?$", href, re.I):
+            has_episode_marker = (
+                self.NUM_RE_EPISODE.search(href)
+                or self.NUM_RE_SXE.search(href)
+            )
+            # Some episode URLs end in `-anime` too. Only treat that suffix
+            # as the series landing page when the URL has no episode number.
+            if not has_episode_marker and re.search(
+                r"/watch/[^/?#]+-anime/?$", href, re.I
+            ):
                 continue
             num = self._extract_num(href)
             label = f"Episode {num}" if num is not None else (
@@ -517,8 +563,10 @@ class DesiDubAnimeScraper(BaseScraper):
                 if t:
                     title = t
             og = soup.find("meta", attrs={"property": "og:image"})
-            if og and og.get("content"):
-                poster = urljoin(self.base, og["content"])
+            og_poster = urljoin(self.base, og["content"]) if og and og.get("content") else None
+            poster = self._poster_from_html(soup, title) or og_poster
+            if self._looks_like_site_art(poster):
+                poster = None
             syn = (
                 soup.select_one(".entry-content")
                 or soup.select_one(".description")
@@ -528,24 +576,25 @@ class DesiDubAnimeScraper(BaseScraper):
             if syn:
                 synopsis = syn.get_text(" ", strip=True)[:1500]
 
-        need_rest = (title == "Unknown") or (not poster) or (not synopsis)
-        if need_rest:
-            slug_match = re.search(r"/anime/([^/?#]+)/?", url)
-            if slug_match:
-                anime = await self._wp_anime_by_slug(slug_match.group(1))
-                if anime:
-                    raw_title = (anime.get("title") or {}).get("rendered") or ""
-                    rt = BeautifulSoup(raw_title, "lxml").get_text(strip=True)
-                    if rt and title == "Unknown":
-                        title = rt
-                    if not poster:
-                        poster = self._poster_from_wp(anime)
-                    if not synopsis:
-                        raw_excerpt = (anime.get("excerpt") or {}).get("rendered") or ""
-                        raw_content = (anime.get("content") or {}).get("rendered") or ""
-                        synopsis = BeautifulSoup(
-                            raw_excerpt or raw_content, "lxml"
-                        ).get_text(" ", strip=True)[:1500]
+        # Use WordPress's featured-media poster as the canonical cover. The
+        # site's og:image can point at a shared logo/banner instead of artwork.
+        slug_match = re.search(r"/anime/([^/?#]+)/?", url)
+        if slug_match:
+            anime = await self._wp_anime_by_slug(slug_match.group(1))
+            if anime:
+                raw_title = (anime.get("title") or {}).get("rendered") or ""
+                rt = BeautifulSoup(raw_title, "lxml").get_text(strip=True)
+                if rt and title == "Unknown":
+                    title = rt
+                wp_poster = self._poster_from_wp(anime)
+                if wp_poster and not self._looks_like_site_art(wp_poster):
+                    poster = poster or wp_poster
+                if not synopsis:
+                    raw_excerpt = (anime.get("excerpt") or {}).get("rendered") or ""
+                    raw_content = (anime.get("content") or {}).get("rendered") or ""
+                    synopsis = BeautifulSoup(
+                        raw_excerpt or raw_content, "lxml"
+                    ).get_text(" ", strip=True)[:1500]
 
         return {
             "title": title,

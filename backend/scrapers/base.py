@@ -9,6 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from backend.config import USER_AGENT, REQUEST_TIMEOUT, SCRAPE_PROXY
+from backend.utils.url import safe_request
 
 
 logger = logging.getLogger("anikoko.scraper")
@@ -95,7 +96,7 @@ class BaseScraper:
                     "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
                 },
                 timeout=REQUEST_TIMEOUT,
-                follow_redirects=True,
+                follow_redirects=False,
             )
             if SCRAPE_PROXY:
                 kwargs["proxy"] = SCRAPE_PROXY
@@ -113,14 +114,14 @@ class BaseScraper:
     async def fetch(self, url: str, referer: Optional[str] = None) -> str:
         c = await self.client()
         headers = {"Referer": referer} if referer else {}
-        r = await c.get(url, headers=headers)
+        r = await safe_request(c, "GET", url, headers=headers)
         r.raise_for_status()
         return r.text
 
     async def fetch_json(self, url: str, referer: Optional[str] = None) -> dict:
         c = await self.client()
         headers = {"Referer": referer} if referer else {}
-        r = await c.get(url, headers=headers)
+        r = await safe_request(c, "GET", url, headers=headers)
         r.raise_for_status()
         return r.json()
 

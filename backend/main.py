@@ -1,8 +1,9 @@
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import List, Optional
-from urllib.parse import quote
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from fastapi import FastAPI, Query, HTTPException, Request
@@ -17,7 +18,8 @@ from backend.config import (
 from backend.scrapers.registry import all_scrapers, get_scraper, slugs
 from backend.resolvers import resolve_embed as _resolve_embed, all_resolvers
 from backend.utils import cache
-from backend.utils.m3u8 import rewrite_playlist, make_proxy_url, is_playlist_response
+from backend.utils.m3u8 import rewrite_playlist, is_playlist_response
+from backend.utils.url import UnsafeURL, validate_public_url
 
 
 logging.basicConfig(
@@ -280,6 +282,20 @@ async def api_anime(url: str, provider: str):
     if provider not in slugs():
         raise HTTPException(404, "unknown provider")
 
+    scraper = get_scraper(provider)
+    base_host = urlsplit(scraper.base).hostname
+    try:
+        await validate_public_url(url)
+    except UnsafeURL as e:
+        raise HTTPException(400, str(e))
+    allowed_hosts = {base_host} if base_host else set()
+    if base_host and base_host.startswith("www."):
+        allowed_hosts.add(base_host.removeprefix("www."))
+    if urlsplit(url).hostname not in allowed_hosts:
+        raise HTTPException(400, "URL host does not match provider")
+    if not scraper.looks_like_series_url(url):
+        raise HTTPException(422, "not a series url")
+
     key = f"anime:{provider}:{url}"
     hit = cache.get(key)
     if hit is not None:
@@ -349,6 +365,12 @@ async def api_sources(url: str, provider: str):
 
 @app.get("/api/resolve")
 async def api_resolve(url: str):
+    try:
+        await validate_public_url(url)
+    except UnsafeURL as e:
+        raise HTTPException(400, str(e))
+    if not any(r.matches(url) for r in all_resolvers()):
+        return {"input": url, "resolved": None, "ok": False}
     m3u8 = await _resolve_embed(url)
     return {
         "input": url,
@@ -378,27 +400,51 @@ async def _open_upstream(
     if extra_headers:
         headers.update(extra_headers)
 
+    client = httpx.AsyncClient(timeout=None, follow_redirects=False, headers=headers)
+    current_url = url
     last_exc = None
-    for i in range(PROXY_RETRIES + 1):
-        client = httpx.AsyncClient(
-            timeout=None, follow_redirects=True, headers=headers
-        )
-        try:
-            upstream = await client.send(
-                client.build_request("GET", url, headers=headers),
-                stream=True,
-            )
-            return client, upstream
-        except (httpx.TimeoutException, httpx.TransportError) as e:
-            await client.aclose()
-            last_exc = e
-            if i == PROXY_RETRIES:
-                break
-            delay = PROXY_RETRY_BACKOFF * (2 ** i)
-            logger.debug("proxy retry %d/%d on %s in %.1fs: %s",
-                         i + 1, PROXY_RETRIES + 1, url, delay, e)
-            await asyncio.sleep(delay)
-    raise HTTPException(502, f"upstream error: {last_exc}")
+    try:
+        for redirect_count in range(6):
+            try:
+                await validate_public_url(current_url)
+            except UnsafeURL as e:
+                raise HTTPException(400, str(e)) from e
+            upstream = None
+            for i in range(PROXY_RETRIES + 1):
+                try:
+                    upstream = await client.send(
+                        client.build_request("GET", current_url, headers=headers),
+                        stream=True,
+                    )
+                    break
+                except (httpx.TimeoutException, httpx.TransportError) as e:
+                    last_exc = e
+                    if i == PROXY_RETRIES:
+                        break
+                    delay = PROXY_RETRY_BACKOFF * (2 ** i)
+                    logger.debug("proxy retry %d/%d on %s in %.1fs: %s",
+                                 i + 1, PROXY_RETRIES + 1, current_url, delay, e)
+                    await asyncio.sleep(delay)
+            if upstream is None:
+                raise HTTPException(502, f"upstream error: {last_exc}")
+
+            location = upstream.headers.get("location")
+            if upstream.status_code not in (301, 302, 303, 307, 308) or not location:
+                return client, upstream
+            if redirect_count == 5:
+                await upstream.aclose()
+                raise HTTPException(502, "too many upstream redirects")
+            next_url = urljoin(str(upstream.url), location)
+            await upstream.aclose()
+            try:
+                await validate_public_url(next_url)
+            except UnsafeURL as e:
+                raise HTTPException(400, str(e)) from e
+            current_url = next_url
+        raise HTTPException(502, "too many upstream redirects")
+    except Exception:
+        await client.aclose()
+        raise
 
 
 def _stream_headers(upstream: httpx.Response) -> dict:
@@ -428,12 +474,12 @@ async def proxy_stream(url: str, request: Request, referer: Optional[str] = None
 
     content_type = upstream.headers.get("content-type", "")
 
-    if is_playlist_response(url, content_type):
+    if is_playlist_response(str(upstream.url), content_type):
         raw = await upstream.aread()
         await upstream.aclose()
         await client.aclose()
         text = raw.decode("utf-8", errors="ignore")
-        rewritten = rewrite_playlist(text, url, referer=referer)
+        rewritten = rewrite_playlist(text, str(upstream.url), referer=referer)
         return Response(
             rewritten,
             media_type="application/vnd.apple.mpegurl",
@@ -475,7 +521,8 @@ async def proxy_download(
         raise HTTPException(upstream.status_code, "upstream error")
 
     name = filename or url.split("/")[-1].split("?")[0] or "video.mp4"
-    if not name.endswith((".mp4", ".mkv", ".ts", ".m3u8")):
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "video.mp4"
+    if not name.lower().endswith((".mp4", ".mkv", ".ts", ".m3u8")):
         name += ".mp4"
 
     content_type = upstream.headers.get("content-type", "application/octet-stream")

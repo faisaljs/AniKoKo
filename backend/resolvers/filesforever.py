@@ -10,6 +10,7 @@ import httpx
 
 from backend.config import USER_AGENT, REQUEST_TIMEOUT, SCRAPE_PROXY
 from backend.resolvers.base import BaseResolver
+from backend.utils.url import safe_request
 
 
 logger = logging.getLogger("anikoko.resolver.filesforever")
@@ -45,12 +46,12 @@ class FilesForeverResolver(BaseResolver):
         }
         if referer:
             headers["Referer"] = referer
-        kwargs = dict(headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=True)
+        kwargs = dict(headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=False)
         if SCRAPE_PROXY:
             kwargs["proxy"] = SCRAPE_PROXY
         try:
             async with httpx.AsyncClient(**kwargs) as client:
-                r = await client.get(url)
+                r = await safe_request(client, "GET", url)
                 if r.status_code >= 400:
                     logger.debug("filesforever: %d from %s", r.status_code, url)
                     return None, str(r.url)

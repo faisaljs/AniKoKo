@@ -1,9 +1,12 @@
 import logging
 from typing import Optional
 
+from urllib.parse import urlsplit
+
 import httpx
 
 from backend.config import USER_AGENT, REQUEST_TIMEOUT, SCRAPE_PROXY
+from backend.utils.url import safe_request
 
 
 logger = logging.getLogger("anikoko.resolver")
@@ -17,8 +20,14 @@ class BaseResolver:
     def matches(cls, url: str) -> bool:
         if not url:
             return False
-        lu = url.lower()
-        return any(h in lu for h in cls.hosts)
+        try:
+            host = urlsplit(url).hostname
+        except ValueError:
+            return False
+        if not host:
+            return False
+        host = host.lower().rstrip(".")
+        return any(host == h or host.endswith("." + h) for h in cls.hosts)
 
     async def fetch(self, url: str, referer: Optional[str] = None) -> str:
         headers = {
@@ -28,11 +37,11 @@ class BaseResolver:
         }
         if referer:
             headers["Referer"] = referer
-        kwargs = dict(headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=True)
+        kwargs = dict(headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=False)
         if SCRAPE_PROXY:
             kwargs["proxy"] = SCRAPE_PROXY
         async with httpx.AsyncClient(**kwargs) as client:
-            r = await client.get(url)
+            r = await safe_request(client, "GET", url)
             r.raise_for_status()
             return r.text
 
@@ -52,11 +61,11 @@ class BaseResolver:
             headers["Referer"] = referer
         if extra_headers:
             headers.update(extra_headers)
-        kwargs = dict(headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=True)
+        kwargs = dict(headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=False)
         if SCRAPE_PROXY:
             kwargs["proxy"] = SCRAPE_PROXY
         async with httpx.AsyncClient(**kwargs) as client:
-            r = await client.post(url, content=body)
+            r = await safe_request(client, "POST", url, content=body)
             r.raise_for_status()
             return r.text
 

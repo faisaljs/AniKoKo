@@ -51,6 +51,8 @@
     lastAnime: null,
     lastQuery: null,
     searchSeq: 0,
+    animeSeq: 0,
+    watchSeq: 0,
     searchController: null,
     episodes: [],
     currentEpisodeIndex: -1,
@@ -202,6 +204,7 @@
 
   function showView(name) {
     state.view = name;
+    if (name !== 'anime') state.animeSeq += 1;
     $$('.view').forEach(v => { v.hidden = true; });
     const el = document.getElementById(`view-${name}`);
     if (el) el.hidden = false;
@@ -490,6 +493,7 @@
     state.episodes = [];
     state.currentEpisodeIndex = -1;
     showView('anime');
+    const requestSeq = ++state.animeSeq;
 
     const dTitle  = $('#dTitle');
     const dPoster = $('#dPoster');
@@ -510,6 +514,7 @@
 
     try {
       const data = await api.anime(url, provider);
+      if (requestSeq !== state.animeSeq) return;
       state.lastAnime.poster = data.poster || null;
 
       dTitle.textContent = data.title || 'Unknown';
@@ -542,6 +547,7 @@
       });
       updateResumeBtn(provider, data.title);
     } catch (e) {
+      if (requestSeq !== state.animeSeq) return;
       dTitle.textContent = 'Failed to load';
       dSyn.textContent = e.message || String(e);
       epList.innerHTML = '';
@@ -558,8 +564,15 @@
   let currentPoster = null;
   let currentHls = null;
   let lastResumeSave = 0;
+  let playbackWatchdog = null;
+  let sourcePlaySeq = 0;
 
   async function openWatch(episodeUrl, provider, animeTitle, epTitle, animeUrlOverride, posterOverride) {
+    const requestSeq = ++state.watchSeq;
+    sourcePlaySeq += 1;
+    clearTimeout(playbackWatchdog);
+    playbackWatchdog = null;
+    teardownHls();
     currentEpisodeUrl = episodeUrl;
     currentProvider = provider;
     currentTitle = `${animeTitle || ''} — ${epTitle || ''}`.trim();
@@ -592,6 +605,7 @@
 
     try {
       const data = await api.sources(episodeUrl, provider);
+      if (requestSeq !== state.watchSeq || currentEpisodeUrl !== episodeUrl) return;
       const sources = data.sources || [];
       if (!sources.length) {
         showFallback('No sources found for this episode.');
@@ -599,6 +613,7 @@
       }
       renderSources(sources, episodeUrl);
     } catch (e) {
+      if (requestSeq !== state.watchSeq || currentEpisodeUrl !== episodeUrl) return;
       showFallback(e.message || 'Failed to load sources.');
     }
   }
@@ -656,6 +671,10 @@
   }
 
   function closeWatch() {
+    state.watchSeq += 1;
+    sourcePlaySeq += 1;
+    clearTimeout(playbackWatchdog);
+    playbackWatchdog = null;
     teardownHls();
     saveCurrentResume();
     $('#playerHost').innerHTML = '';
@@ -740,6 +759,9 @@
     sources.sort((a, b) => sourceRank(a) - sourceRank(b));
 
     const play = async (source, btn) => {
+      const playSeq = ++sourcePlaySeq;
+      clearTimeout(playbackWatchdog);
+      playbackWatchdog = null;
       $$('#sourceList button').forEach(b => b.classList.remove('active'));
       if (btn) btn.classList.add('active');
       fallback.hidden = true;
@@ -748,7 +770,7 @@
       if (source.kind === 'embed') {
         host.innerHTML = `<iframe src="${esc(source.url)}"
           allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-          allowfullscreen referrerpolicy="no-referrer"></iframe>`;
+          allowfullscreen referrerpolicy="origin"></iframe>`;
         return;
       }
 
@@ -779,6 +801,7 @@
 
       try {
         const Hls = await ensureHlsLib();
+        if (playSeq !== sourcePlaySeq) return;
         if (!Hls || !Hls.isSupported()) {
           v.src = proxied;
           v.play().catch(() => {});
@@ -793,6 +816,7 @@
         hls.attachMedia(v);
         hls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
         hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (playSeq !== sourcePlaySeq) return;
           console.error('[AniKoKo] HLS error:', data);
           if (data.fatal) {
             fallback.hidden = false;
@@ -801,15 +825,23 @@
         });
         currentHls = hls;
 
-        const watchdog = setTimeout(() => {
+        playbackWatchdog = setTimeout(() => {
+          if (playSeq !== sourcePlaySeq) return;
           if (v.readyState < 2 || v.paused) {
             fallback.hidden = false;
             fallback.innerHTML = '<p>Stream taking too long — try another server.</p>';
           }
         }, 10000);
-        v.addEventListener('playing', () => clearTimeout(watchdog), { once: true });
-        v.addEventListener('loadeddata', () => clearTimeout(watchdog), { once: true });
+        const clearWatchdog = () => {
+          if (playSeq === sourcePlaySeq) {
+            clearTimeout(playbackWatchdog);
+            playbackWatchdog = null;
+          }
+        };
+        v.addEventListener('playing', clearWatchdog, { once: true });
+        v.addEventListener('loadeddata', clearWatchdog, { once: true });
       } catch (e) {
+        if (playSeq !== sourcePlaySeq) return;
         console.error('[AniKoKo] HLS setup failed:', e);
         fallback.hidden = false;
         fallback.innerHTML = `<p>${esc(e.message || 'hls.js load failed')}</p>`;
